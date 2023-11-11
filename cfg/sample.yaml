@@ -1,0 +1,56 @@
+strategy: ddp
+benchmark: True
+pretrained: False
+sync_batchnorm: False
+clip_grad: null
+precision: 16
+epochs: 300
+# --------------------------------------
+# Dataset parameters
+# --------------------------------------
+dataset_name: jhmdb
+split: 1
+# --------------------------------------
+# Optimizer parameters
+# --------------------------------------
+optim: adamw
+lr: 0.0004
+weight_decay: 0.001
+momentum: 0.9
+# --------------------------------------
+# Learning rate scheduler parameters
+# --------------------------------------
+sched: cosine
+warmup_lr: 0.000001
+min_lr: 0.00001
+warmup_epochs: 20
+# --------------------------------------
+# Model parameters
+# --------------------------------------
+model_name: raft
+dropout: 0.0
+alternate_corr: False
+small: False
+mixed_precision: False
+# --------------------------------------
+# Loss parameters
+# --------------------------------------
+flow_weights: [0.005, 0.01, 0.02, 0.08, 0.32]
+sup_weight: 1
+unsup_weight: 1
+dis_weight: 1
+con_weight: 1
+# --------------------------------------
+# Augmentation parameters
+# --------------------------------------
+input_size: [224, 224]
+# Color jitter
+brightness: 0.4
+contrast: 0.4
+saturation: 0.4
+hue: 0.1
+p_jitter: 0.5
+# Blur
+kernel_size: 3
+sigma: 0.1
+p_blur: 0.5
