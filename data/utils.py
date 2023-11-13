@@ -7,8 +7,6 @@ def read_image(img_fn):
     return img
 
 def skeletons_to_flow(skl1, skl2, height, width):
-    print(height, width)
-
     movement = skl2 - skl1
     flow = torch.zeros((height, width, 2))
     for j, m in zip(skl1, movement):

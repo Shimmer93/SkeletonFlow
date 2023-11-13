@@ -1,5 +1,6 @@
 from argparse import ArgumentParser
 import wandb
+import os
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, TQDMProgressBar
@@ -25,7 +26,7 @@ def main(args):
         TQDMProgressBar(refresh_rate=20)
     ]
 
-    wandb_on = True if args.dev+args.test_phase==0 else False
+    wandb_on = True if args.dev+args.test==0 else False
     if wandb_on:
         wandb_logger = WandbLogger(
             project=args.wandb_project_name,
@@ -50,7 +51,7 @@ def main(args):
         benchmark=args.benchmark
     )
 
-    if bool(args.test_phase):
+    if bool(args.test):
         trainer.test(model, datamodule=dm)
     else:
         trainer.fit(model, datamodule=dm, ckpt_path=args.checkpoint_path)
@@ -84,6 +85,6 @@ if __name__ == "__main__":
     args = merge_args_cfg(args, cfg)
 
     # please change {WANDB_API_KEY} to your personal api_key before using wandb
-    # os.environ["WANDB_API_KEY"] = "{WANDB_API_KEY}"
+    os.environ["WANDB_API_KEY"] = "60b29f8aae47df8755cbd430f0179c0cd8797bf6"
 
     main(args)

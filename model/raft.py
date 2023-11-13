@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import sys
+sys.path.append('/home/zpengac/pose/SkeletonFlow')
 from model.corr import CorrBlock, AlternateCorrBlock
 
 try:
@@ -483,23 +485,22 @@ class RAFT(nn.Module):
         return up_flow.reshape(N, 2, 8*H, 8*W)
 
 
-    def forward(self, images, iters=12, flow_init=None, upsample=True):
+    def forward(self, images, n_iters=12, flow_init=None, upsample=True):
         """ Estimate optical flow between pair of frames """
 
-        image1, image2 = torch.split(images, 2, dim=1)
+        image1, image2 = torch.chunk(images, chunks=2, dim=1)
 
         # image1 = 2 * (image1 / 255.0) - 1.0
         # image2 = 2 * (image2 / 255.0) - 1.0
 
-        image1 = image1.contiguous()
-        image2 = image2.contiguous()
+        image1 = image1.squeeze(1).contiguous()
+        image2 = image2.squeeze(1).contiguous()
 
         hdim = self.hidden_dim
         cdim = self.context_dim
 
         # run the feature network
-        with autocast(enabled=self.args.mixed_precision):
-            fmap1, fmap2 = self.fnet([image1, image2])        
+        fmap1, fmap2 = self.fnet([image1, image2])        
         
         fmap1 = fmap1.float()
         fmap2 = fmap2.float()
@@ -509,11 +510,10 @@ class RAFT(nn.Module):
             corr_fn = CorrBlock(fmap1, fmap2, radius=self.args.corr_radius)
 
         # run the context network
-        with autocast(enabled=self.args.mixed_precision):
-            cnet = self.cnet(image1)
-            net, inp = torch.split(cnet, [hdim, cdim], dim=1)
-            net = torch.tanh(net)
-            inp = torch.relu(inp)
+        cnet = self.cnet(image1)
+        net, inp = torch.split(cnet, [hdim, cdim], dim=1)
+        net = torch.tanh(net)
+        inp = torch.relu(inp)
 
         coords0, coords1 = self.initialize_flow(image1)
 
@@ -521,13 +521,12 @@ class RAFT(nn.Module):
             coords1 = coords1 + flow_init
 
         flow_predictions = []
-        for itr in range(iters):
+        for itr in range(n_iters):
             coords1 = coords1.detach()
             corr = corr_fn(coords1) # index correlation volume
 
             flow = coords1 - coords0
-            with autocast(enabled=self.args.mixed_precision):
-                net, up_mask, delta_flow = self.update_block(net, inp, corr, flow)
+            net, up_mask, delta_flow = self.update_block(net, inp, corr, flow)
 
             # F(t+1) = F(t) + \Delta(t)
             coords1 = coords1 + delta_flow
@@ -540,7 +539,35 @@ class RAFT(nn.Module):
             
             flow_predictions.append(flow_up)
 
-        if self.eval():
+        if self.training:
+            return flow_predictions
+        else:
             return [flow_predictions[-1]]
             
-        return flow_predictions
+    
+if __name__ == '__main__':
+    from argparse import Namespace
+
+    args = {
+        'small': True,
+        'mixed_precision': False,
+        'corr_levels': 4,
+        'corr_radius': 3,
+        'alternate_corr': False,
+        'dropout': 0.0
+    }
+
+    args = Namespace(**args)
+
+    model = RAFT(args)
+    model.train()
+
+    image1 = torch.randn(8, 3, 256, 256)
+    image2 = torch.randn(8, 3, 256, 256)
+    images = torch.stack([image1, image2], dim=1)
+
+    print(images.shape)
+
+    flow_predictions = model(images)
+    for i in range(len(flow_predictions)):
+        print(flow_predictions[i].shape)

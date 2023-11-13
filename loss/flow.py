@@ -18,8 +18,6 @@ def EPE(flow_pred, flow_true, mask=None, real=False):
 
 def EPE_all(flows_pred, flow_true, mask=None, weights=(0.005, 0.01, 0.02, 0.08, 0.32)):
 
-    if len(flows_pred) < 5:
-        weights = [0.005]*len(flows_pred)
     loss = 0
 
     for i in range(len(weights)):
@@ -59,8 +57,6 @@ def photometric_loss(warped, frm0):
 
 
 def unsup_loss(pred_flows, warped_imgs, frm0, weights=(0.005, 0.01, 0.02, 0.08, 0.32)):
-    if len(pred_flows) < 5:
-        weights = [0.005]*len(pred_flows)
     bce = 0
     smooth = 0
     for i in range(len(weights)):
@@ -71,24 +67,30 @@ def unsup_loss(pred_flows, warped_imgs, frm0, weights=(0.005, 0.01, 0.02, 0.08, 
     return loss, bce, smooth
 
 class EPELoss(nn.Module):
-    def __init__(self, weights=(0.005, 0.01, 0.02, 0.08, 0.32)):
+    def __init__(self, gamma):
         super(EPELoss, self).__init__()
-        self.weights = weights
+        self.gamma = gamma
 
     def forward(self, pred_flows, flow, mask):
-        loss = EPE_all(pred_flows, flow, mask, self.weights)
+        n_iters = len(pred_flows)
+        weights = [self.gamma ** (n_iters - i - 1) for i in range(n_iters)]
+        loss = EPE_all(pred_flows, flow, mask, weights)
         return loss
 
 class UnsupLoss(nn.Module):
-    def __init__(self, weights=(0.005, 0.01, 0.02, 0.08, 0.32)):
+    def __init__(self, gamma):
         super(UnsupLoss, self).__init__()
-        self.weights = weights
+        self.gamma = gamma
 
     def forward(self, pred_flows, frms):
-        frm0, frm1 = torch.split(frms, 2, dim=1)
+        frm0, frm1 = torch.chunk(frms, 2, dim=1)
+        frm0.squeeze_(dim=1)
+        frm1.squeeze_(dim=1)
         warped_frms = [self._stn(flow, frm1) for flow in pred_flows]
 
-        loss = unsup_loss(pred_flows, warped_frms, frm0, self.weights)
+        n_iters = len(pred_flows)
+        weights = [self.gamma ** (n_iters - i - 1) for i in range(n_iters)]
+        loss = unsup_loss(pred_flows, warped_frms, frm0, weights)[0]
 
         return loss
     
@@ -117,24 +119,28 @@ class UnsupLoss(nn.Module):
         return warped_frm
     
 class DisLoss(nn.Module):
-    def __init__(self, weights=(0.005, 0.01, 0.02, 0.08, 0.32)):
+    def __init__(self, gamma):
         super(DisLoss, self).__init__()
-        self.weights = weights
+        self.gamma = gamma
     
     def forward(self, pred_flows, skls, flow):
+        n_iters = len(pred_flows)
+        weights = [self.gamma ** (n_iters - i - 1) for i in range(n_iters)]
         loss = 0
         for i in range(len(pred_flows)):
-            loss += self.weights[i] * self._dis_loss(pred_flows[i], skls, flow)
+            loss += weights[i] * self._dis_loss(pred_flows[i], skls, flow)
         return loss
 
     def _dis2kp(self, flow, kp):
         # flow: B, 2, H, W
         # kp: B, D
 
+        # print('kp', kp.shape)
+
         B, _, H, W = flow.shape
-        ix, iy = torch.meshgrid(torch.arange(W), torch.arange(H))
-        ix = ix.repeat(B, 1, 1).to(flow.device)
+        iy, ix = torch.meshgrid(torch.arange(H), torch.arange(W))
         iy = iy.repeat(B, 1, 1).to(flow.device)
+        ix = ix.repeat(B, 1, 1).to(flow.device)
 
         kp_x = kp[..., 0].unsqueeze(-1).unsqueeze(-1)
         kp_y = kp[..., 1].unsqueeze(-1).unsqueeze(-1)
@@ -146,6 +152,8 @@ class DisLoss(nn.Module):
     def _dis2kps(self, flow, kps):
         # flow: B, 2, H, W
         # kps: B, J, D
+
+        # print('kps', kps.shape)
 
         dis_sqs = []
         for i in range(kps.size(1)):
@@ -164,26 +172,31 @@ class DisLoss(nn.Module):
         dis = torch.sqrt(dis_sq)
         dis_normed = dis / torch.max(dis)
 
-        dis_loss = torch.mean(dis_normed * pred_flow)
+        # print('dis_normed', dis_normed.unsqueeze(1).shape)
+        # print('pred_flow', pred_flow.shape)
+        dis_loss = torch.mean(dis_normed.unsqueeze(1) * pred_flow)
         return dis_loss
     
 class ConLoss(nn.Module):
-    def __init__(self, weights=(0.005, 0.01, 0.02, 0.08, 0.32)):
+    def __init__(self, gamma):
         super(ConLoss, self).__init__()
-        self.weights = weights
+        self.gamma = gamma
 
     def forward(self, pred_flows, skls, flow):
+        n_iters = len(pred_flows)
+        weights = [self.gamma ** (n_iters - i - 1) for i in range(n_iters)]
         loss = 0
         for i in range(len(pred_flows)):
-            loss += self.weights[i] * self._con_loss(pred_flows[i], skls, flow)
+            loss += weights[i] * self._con_loss(pred_flows[i], skls, flow)
         return loss
     
     def _sim2kp_flow(self, pred_flow, kp, flow):
         # pred_flow: B, 2, H, W
         # kp: B, D
         # flow: B, 2, H, W
+        B = pred_flow.size(0)
+        kp_flow = flow[torch.arange(B), :, kp[:, 1].type(torch.int), kp[:, 0].type(torch.int)].unsqueeze(-1).unsqueeze(-1)
 
-        kp_flow = flow[:, :, kp[1], kp[0]]
         sim = torch.sum(pred_flow * kp_flow, dim=1) / (torch.norm(pred_flow, dim=1) * torch.norm(kp_flow, dim=1))
         return sim
     
@@ -207,4 +220,4 @@ class ConLoss(nn.Module):
 
         sim = self._sim2flow(pred_flow, kps, flow)
         con_loss = EPE(pred_flow, flow) * sim
-        return con_loss
+        return con_loss.mean()

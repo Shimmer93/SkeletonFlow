@@ -1,6 +1,8 @@
 *.out
 *.slurm
 *playground.ipynb
+wandb/
+model_ckpt/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

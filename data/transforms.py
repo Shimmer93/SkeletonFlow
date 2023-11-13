@@ -22,10 +22,10 @@ def random_crop(frms, skls):
     # skl: numpy array of shape N J D
 
     h, w = frms.shape[1:3]
-    x_min = int(np.min(skls[..., 0]))
-    x_max = int(np.max(skls[..., 0]))
-    y_min = int(np.min(skls[..., 1]))
-    y_max = int(np.max(skls[..., 1]))
+    x_min = np.maximum(int(np.min(skls[..., 0])), 0)
+    x_max = np.minimum(int(np.max(skls[..., 0])) + 1, w)
+    y_min = np.maximum(int(np.min(skls[..., 1])), 0)
+    y_max = np.minimum(int(np.max(skls[..., 1])) + 1, h)
 
     c_size_min = np.maximum(x_max - x_min, y_max - y_min)
     c_size_max = np.minimum(h, w)
@@ -72,8 +72,8 @@ class TrainFrameTransforms():
         self.hparams = hparams
         self.tsfm = T.Compose([
             T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            T.RandomApply([T.ColorJitter(brightness=hparams.brightness, contrast=hparams.contrast, saturation=hparams.saturation, hue=hparams.hue)], p=hparams.jitter_p),
-            T.RandomApply([T.GaussianBlur(kernel_size=hparams.kernel_size, sigma=hparams.sigma)], p=hparams.blur_p)
+            T.RandomApply([T.ColorJitter(brightness=hparams.brightness, contrast=hparams.contrast, saturation=hparams.saturation, hue=hparams.hue)], p=hparams.p_jitter),
+            T.RandomApply([T.GaussianBlur(kernel_size=hparams.kernel_size, sigma=hparams.sigma)], p=hparams.p_blur)
         ])
 
     def __call__(self, frm):
