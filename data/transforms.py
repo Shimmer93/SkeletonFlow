@@ -71,7 +71,7 @@ class TrainFrameTransforms():
     def __init__(self, hparams):
         self.hparams = hparams
         self.tsfm = T.Compose([
-            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            # T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             T.RandomApply([T.ColorJitter(brightness=hparams.brightness, contrast=hparams.contrast, saturation=hparams.saturation, hue=hparams.hue)], p=hparams.p_jitter),
             T.RandomApply([T.GaussianBlur(kernel_size=hparams.kernel_size, sigma=hparams.sigma)], p=hparams.p_blur)
         ])
@@ -92,9 +92,10 @@ class ValAllTransforms():
 class ValFrameTransforms():
     def __init__(self, hparams):
         self.hparams = hparams
-        self.tsfm = T.Compose([
-            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
+        # self.tsfm = T.Compose([
+        #     T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        # ])
 
     def __call__(self, frm):
-        return self.tsfm(frm)
+        # return self.tsfm(frm)
+        return frm

@@ -174,7 +174,8 @@ class DisLoss(nn.Module):
 
         # print('dis_normed', dis_normed.unsqueeze(1).shape)
         # print('pred_flow', pred_flow.shape)
-        dis_loss = torch.mean(dis_normed.unsqueeze(1) * pred_flow)
+        mag = torch.norm(pred_flow, dim=1) ** 2
+        dis_loss = torch.mean(dis_normed.unsqueeze(1) * mag)
         return dis_loss
     
 class ConLoss(nn.Module):
@@ -197,7 +198,7 @@ class ConLoss(nn.Module):
         B = pred_flow.size(0)
         kp_flow = flow[torch.arange(B), :, kp[:, 1].type(torch.int), kp[:, 0].type(torch.int)].unsqueeze(-1).unsqueeze(-1)
 
-        sim = torch.sum(pred_flow * kp_flow, dim=1) / (torch.norm(pred_flow, dim=1) * torch.norm(kp_flow, dim=1))
+        sim = torch.sum(pred_flow * kp_flow, dim=1) / ((torch.norm(pred_flow, dim=1) * torch.norm(kp_flow, dim=1)) + 1e-6)
         return sim
     
     def _sim2flow(self, pred_flow, kps, flow):
@@ -219,5 +220,163 @@ class ConLoss(nn.Module):
         # flow: B, 2, H, W
 
         sim = self._sim2flow(pred_flow, kps, flow)
-        con_loss = EPE(pred_flow, flow) * sim
+        mag = torch.norm(pred_flow, dim=1) ** 2
+        con_loss = -mag * sim
         return con_loss.mean()
+    
+class ConSegLoss(nn.Module):
+    def __init__(self, gamma, thres_con=0.95):
+        super(ConSegLoss, self).__init__()
+        self.criterion = nn.BCEWithLogitsLoss()
+        self.gamma = gamma
+        self.thres_con = thres_con
+
+    def forward(self, masks, pred_flows, skls, flows):
+        n_iters = len(pred_flows)
+        weights = [self.gamma ** (n_iters - i - 1) for i in range(n_iters)]
+        loss = 0
+        mcons = []
+        for i in range(len(pred_flows)):
+            l, m = self._con_loss(masks, pred_flows[i], skls, flows)
+            loss += weights[i] * l
+            mcons.append(m)
+        return loss, mcons[-1]
+
+    def _dis2kp(self, flow, kp):
+        # flow: B, 2, H, W
+        # kp: B, D
+
+        # print('kp', kp.shape)
+
+        B, _, H, W = flow.shape
+        iy, ix = torch.meshgrid(torch.arange(H), torch.arange(W))
+        iy = iy.repeat(B, 1, 1).to(flow.device)
+        ix = ix.repeat(B, 1, 1).to(flow.device)
+
+        kp_x = kp[..., 0].unsqueeze(-1).unsqueeze(-1)
+        kp_y = kp[..., 1].unsqueeze(-1).unsqueeze(-1)
+
+        dis_sq = (ix - kp_x)**2 + (iy - kp_y)**2
+
+        return dis_sq
+    
+    def _dis2whichkp(self, flow, kps):
+        # flow: B, 2, H, W
+        # kps: B, J, D
+
+        # print('kps', kps.shape)
+
+        dis_sqs = []
+        for i in range(kps.size(1)):
+            dis_sq = self._dis2kp(flow, kps[:, i, :])
+            dis_sqs.append(dis_sq)
+        dis_sqs = torch.stack(dis_sqs, dim=1)
+        which_kp = torch.argmin(dis_sqs, dim=1, keepdim=True)
+
+        return which_kp
+
+    def _sim2kp_flow(self, pred_flow, kp, flow):
+        # pred_flow: B, 2, H, W
+        # kp: B, D
+        # flow: B, 2, H, W
+        B = pred_flow.size(0)
+        kp_flow = flow[torch.arange(B), :, kp[:, 1].type(torch.int), kp[:, 0].type(torch.int)].unsqueeze(-1).unsqueeze(-1)
+
+        sim = torch.sum(pred_flow * kp_flow, dim=1) / ((torch.norm(pred_flow, dim=1) * torch.norm(kp_flow, dim=1)) + 1e-6)
+        return sim
+    
+    def _sim2flow(self, pred_flow, kps, flow):
+        # pred_flow: B, 2, H, W
+        # kps: B, J, D
+        # flow: B, 2, H, W
+
+        which_kp = self._dis2whichkp(flow, kps) # B, 1, H, W
+        sims = []
+        for i in range(kps.size(1)):
+            sim = self._sim2kp_flow(pred_flow, kps[:, i, :], flow)
+            sims.append(sim)
+        sims = torch.stack(sims, dim=1)
+        sim_selected = torch.gather(sims, dim=1, index=which_kp)
+        return sim_selected
+
+    def _con_loss(self, mask, pred_flow, kps, flow):
+        # pred_flow: B, 2, H, W
+        # kps: B, J, D
+        # flow: B, 2, H, W
+
+        sim = self._sim2flow(pred_flow, kps, flow)
+        mask_gt = (sim > self.thres_con).float()
+        con_loss = self.criterion(mask, mask_gt)
+        return con_loss, mask_gt
+
+class PointSegLoss(nn.Module):
+    def __init__(self):
+        super(PointSegLoss, self).__init__()
+        self.criterion = nn.BCEWithLogitsLoss()
+
+    def forward(self, masks, skls, flows):
+        # masks: B, 1, H, W
+        # skls: B, J, D
+        # flows: B, 2, H, W
+
+        # print(masks.shape, skls.shape, flows.shape)
+
+        flow_masks = torch.sum(flows**2, dim=1, keepdim=True) > 0
+        y_mins = torch.min(skls[:, :, 1], dim=1)[0].type(torch.int)
+        y_maxs = torch.max(skls[:, :, 1], dim=1)[0].type(torch.int)
+        x_mins = torch.min(skls[:, :, 0], dim=1)[0].type(torch.int)
+        x_maxs = torch.max(skls[:, :, 0], dim=1)[0].type(torch.int)
+        h, w = flows.size(2), flows.size(3)
+
+        # print(y_mins.shape)
+
+        neg_masks = []
+        for(i, (y_min, y_max, x_min, x_max)) in enumerate(zip(y_mins, y_maxs, x_mins, x_maxs)):
+            choices = torch.arange(0, h*w).view(h, w)
+            choices[y_min:y_max, x_min:x_max] = -1
+            choices = choices[choices != -1].flatten()
+            idxs = torch.randperm(len(choices))[:skls.size(1)]
+            samples = choices[idxs]
+            canvas = torch.zeros(h*w).to(skls.device)
+            canvas[samples] = 1
+            canvas = canvas.view(1, 1, h, w)
+            neg_masks.append(canvas)
+        neg_masks = torch.cat(neg_masks, dim=0).to(dtype=torch.bool)
+
+        pos_preds = masks[flow_masks]
+        pos_gts = torch.ones_like(pos_preds)
+        neg_preds = masks[neg_masks]
+        neg_gts = torch.zeros_like(neg_preds)
+
+        pos_loss = self.criterion(pos_preds, pos_gts)
+        neg_loss = self.criterion(neg_preds, neg_gts)
+
+        loss = pos_loss + neg_loss
+
+        return loss
+
+
+if __name__ == '__main__':
+    gamma = 0.8
+    n_iters = 12
+    pred_flows = [torch.randn(4, 2, 256, 256) for i in range(n_iters)]
+    flow = torch.randn(4, 2, 256, 256)
+    skls = torch.randn(4, 17, 2)
+
+    flow_mag = torch.sum(flow**2, dim=1, keepdim=True)
+    mask = (flow_mag != 0)
+
+    l1 = EPELoss(gamma)
+    l2 = UnsupLoss(gamma)
+    l3 = DisLoss(gamma)
+    l4 = ConLoss(gamma)
+
+    loss1 = l1(pred_flows, flow, mask)
+    loss2 = l2(pred_flows, skls)
+    loss3 = l3(pred_flows, skls, flow)
+    loss4 = l4(pred_flows, skls, flow)
+
+    print(loss1)
+    print(loss2)
+    print(loss3)
+    print(loss4)

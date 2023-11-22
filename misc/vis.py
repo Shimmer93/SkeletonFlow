@@ -19,8 +19,8 @@ import numpy as np
 
 def denormalize(img):
     # denormalize an image based on ImageNet stats
-    img = img * np.array([0.229, 0.224, 0.225]).reshape(1, 1, 3)
-    img = img + np.array([0.485, 0.456, 0.406]).reshape(1, 1, 3)
+    # img = img * np.array([0.229, 0.224, 0.225]).reshape(1, 1, 3)
+    # img = img + np.array([0.485, 0.456, 0.406]).reshape(1, 1, 3)
     img = img * 255
     return img.astype(np.uint8)
 

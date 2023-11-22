@@ -8,7 +8,7 @@ from data.transforms import TrainAllTransforms, TrainFrameTransforms, ValAllTran
 
 def create_dataset(hparams, mode, all_tsfm, frm_tsfm):
     if hparams.dataset_name == 'jhmdb':
-        return SubJHMDBDataset(hparams.data_dir, mode=mode, split=hparams.split, 
+        return SubJHMDBDataset(hparams.data_dir, mode=mode, split=hparams.split, n_inter=hparams.n_inter,
                                all_tsfm=all_tsfm(hparams), frm_tsfm=frm_tsfm(hparams))
     else:
         raise NotImplementedError

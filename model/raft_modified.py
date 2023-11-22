@@ -202,19 +202,22 @@ class BasicEncoder(nn.Module):
         x = self.norm1(x)
         x = self.relu1(x)
 
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
+        x1 = self.layer1(x)
+        x2 = self.layer2(x1)
+        x3 = self.layer3(x2)
 
-        x = self.conv2(x)
+        x = self.conv2(x3)
 
         if self.training and self.dropout is not None:
             x = self.dropout(x)
 
         if is_list:
             x = torch.split(x, [batch_dim, batch_dim], dim=0)
+            x1 = x1[:batch_dim, ...]
+            x2 = x2[:batch_dim, ...]
+            x3 = x3[:batch_dim, ...]
 
-        return x
+        return x, (x1, x2, x3)
 
 
 class SmallEncoder(nn.Module):
@@ -278,18 +281,21 @@ class SmallEncoder(nn.Module):
         x = self.norm1(x)
         x = self.relu1(x)
 
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.conv2(x)
+        x1 = self.layer1(x)
+        x2 = self.layer2(x1)
+        x3 = self.layer3(x2)
+        x = self.conv2(x3)
 
         if self.training and self.dropout is not None:
             x = self.dropout(x)
 
         if is_list:
             x = torch.split(x, [batch_dim, batch_dim], dim=0)
+            x1 = x1[:batch_dim, ...]
+            x2 = x2[:batch_dim, ...]
+            x3 = x3[:batch_dim, ...]
 
-        return x
+        return x, (x1, x2, x3)
 
 class FlowHead(nn.Module):
     def __init__(self, input_dim=128, hidden_dim=256):
@@ -422,10 +428,53 @@ class BasicUpdateBlock(nn.Module):
         # scale mask to balence gradients
         mask = .25 * self.mask(net)
         return net, mask, delta_flow
+    
+class MaskDecoder(nn.Module):
+    def __init__(self, small=False):
+        super(MaskDecoder, self).__init__()
+        if small:
+            dims = [32, 64, 96]
+        else:
+            dims = [64, 96, 128]
 
-class RAFT(nn.Module):
+        self.dec3 = nn.Sequential(
+            nn.Conv2d(dims[2], 2*dims[2], 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(2*dims[2], dims[2], 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
+        )
+
+        self.dec2 = nn.Sequential(
+            nn.Conv2d(dims[1] + dims[2], dims[2], 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(dims[2], dims[1], 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
+        )
+
+        self.dec1 = nn.Sequential(
+            nn.Conv2d(dims[0] + dims[1], dims[1], 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(dims[1], dims[0], 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
+        )
+
+        self.conv = nn.Conv2d(dims[0], 1, kernel_size=1, padding=0)
+        # self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x1, x2, x3):
+        x = self.dec3(x3)
+        x = self.dec2(torch.cat([x, x2], dim=1))
+        x = self.dec1(torch.cat([x, x1], dim=1))
+        x = self.conv(x)
+        # x = self.sigmoid(self.conv(x))
+        return x
+
+class RAFT_Modified(nn.Module):
     def __init__(self, args):
-        super(RAFT, self).__init__()
+        super(RAFT_Modified, self).__init__()
         self.args = args
 
         if args.small:
@@ -456,6 +505,8 @@ class RAFT(nn.Module):
             self.fnet = BasicEncoder(output_dim=256, norm_fn='instance', dropout=args.dropout)        
             self.cnet = BasicEncoder(output_dim=hdim+cdim, norm_fn='batch', dropout=args.dropout)
             self.update_block = BasicUpdateBlock(self.args, hidden_dim=hdim)
+
+        self.mask_dec = MaskDecoder(small=args.small)
 
     def freeze_bn(self):
         for m in self.modules():
@@ -490,8 +541,8 @@ class RAFT(nn.Module):
 
         image1, image2 = torch.chunk(images, chunks=2, dim=1)
 
-        # image1 = 2 * (image1 / 255.0) - 1.0
-        # image2 = 2 * (image2 / 255.0) - 1.0
+        image1 = 2 * (image1) - 1.0
+        image2 = 2 * (image2) - 1.0
 
         image1 = image1.squeeze(1).contiguous()
         image2 = image2.squeeze(1).contiguous()
@@ -500,18 +551,18 @@ class RAFT(nn.Module):
         cdim = self.context_dim
 
         # run the feature network
-        fmap1, fmap2 = self.fnet([image1, image2])        
+        (fmap1, fmap2), _ = self.fnet([image1, image2])
         
         fmap1 = fmap1.float()
         fmap2 = fmap2.float()
-        # print(fmap1.shape)
         if self.args.alternate_corr:
             corr_fn = AlternateCorrBlock(fmap1, fmap2, radius=self.args.corr_radius)
         else:
             corr_fn = CorrBlock(fmap1, fmap2, radius=self.args.corr_radius)
 
         # run the context network
-        cnet = self.cnet(image1)
+        cnet, (f1, f2, f3) = self.cnet(image1)
+        mask = self.mask_dec(f1, f2, f3)
         net, inp = torch.split(cnet, [hdim, cdim], dim=1)
         net = torch.tanh(net)
         inp = torch.relu(inp)
@@ -541,9 +592,9 @@ class RAFT(nn.Module):
             flow_predictions.append(flow_up)
 
         if self.training:
-            return flow_predictions
+            return flow_predictions, mask
         else:
-            return [flow_predictions[-1]]
+            return [flow_predictions[-1]], mask
             
     
 if __name__ == '__main__':
@@ -569,6 +620,6 @@ if __name__ == '__main__':
 
     print(images.shape)
 
-    flow_predictions = model(images)
+    flow_predictions, mask = model(images)
     for i in range(len(flow_predictions)):
         print(flow_predictions[i].shape)

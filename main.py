@@ -52,7 +52,7 @@ def main(args):
     )
 
     if bool(args.test):
-        trainer.test(model, datamodule=dm)
+        trainer.test(model, datamodule=dm, ckpt_path=args.checkpoint_path)
     else:
         trainer.fit(model, datamodule=dm, ckpt_path=args.checkpoint_path)
         if args.dev==0:
