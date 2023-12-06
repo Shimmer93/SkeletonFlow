@@ -3,6 +3,7 @@
 *playground.ipynb
 wandb/
 model_ckpt/
+lightning_logs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -7,8 +7,8 @@ import os
 import json
 
 import sys
-sys.path.append('/home/zpengac/pose/SkeletonFlow')
-from data.utils import read_image, skeletons_to_flow, add_inter_kp_in_skl
+sys.path.append('/mnt/home/zpengac/USERDIR/HAR/SkeletonFlow')
+from data.utils import read_image, skeletons_to_flow, add_inter_kp_in_skl, skeleton_to_body_mask, skeleton_to_joint_mask, skeleton_to_joint_dmap
 
 class SubJHMDBDataset(Dataset):
     def __init__(self, data_dir, mode='train', split=1, n_inter=2, all_tsfm=None, frm_tsfm=None):
@@ -22,6 +22,18 @@ class SubJHMDBDataset(Dataset):
         self.frm_tsfm = frm_tsfm
         self.flip_idxs = [0,1,2,4,3,6,5,8,7,10,9,12,11,14,13]
         self.adj_pairs = [[0,1],[0,2],[0,3],[0,4],[1,5],[1,6],[3,7],[4,8],[5,9],[6,10],[7,11],[8,12],[9,13],[10,14]]
+        self.body_parts = {
+            'head': [[0, 2]],
+            'torso': [[0, 1], [0, 3], [0, 4], [1, 5], [1, 6], [3, 5], [4, 6], [5, 6]],
+            'left upper arm': [[3, 7]],
+            'left lower arm': [[7, 11]],
+            'right upper arm': [[4, 8]],
+            'right lower arm': [[8, 12]],
+            'left upper leg': [[5, 9]],
+            'left lower leg': [[9, 13]],
+            'right upper leg': [[6, 10]],
+            'right lower leg': [[10, 14]]
+        }
 
         # train_test = 'train' if mode in ['train', 'val'] else 'test'
         train_test = 'train' if mode == 'train' else 'test'
@@ -44,6 +56,8 @@ class SubJHMDBDataset(Dataset):
         frm1_fn = frm0_fn.replace(f'{i_frm0:05d}', f'{i_frm1:05d}')
         frm0 = read_image(frm0_fn)
         frm1 = read_image(frm1_fn)
+        if frm0.shape[0] != frm1.shape[0] or frm0.shape[1] != frm1.shape[1]:
+            frm1 = frm0
         frms = np.stack([frm0, frm1], axis=0)
 
         skl0 = self._get_skeleton(i0)
@@ -51,12 +65,26 @@ class SubJHMDBDataset(Dataset):
         skls = np.stack([skl0, skl1], axis=0)
 
         frms, skls = self.all_tsfm(frms, skls, self.flip_idxs)
-        if self.n_inter > 0:
-            skls = torch.stack([add_inter_kp_in_skl(skl, self.adj_pairs, n_inter=self.n_inter) for skl in skls], dim=0)
         frms = self.frm_tsfm(frms)
         flow = skeletons_to_flow(skls[0], skls[1], frms.shape[2], frms.shape[3])
+        
+        mask_body0 = skeleton_to_body_mask(skls[0], self.body_parts, frms.shape[2], frms.shape[3])
+        mask_body1 = skeleton_to_body_mask(skls[1], self.body_parts, frms.shape[2], frms.shape[3])
+        mask_joint0 = skeleton_to_joint_mask(skls[0], frms.shape[2], frms.shape[3])
+        mask_joint1 = skeleton_to_joint_mask(skls[1], frms.shape[2], frms.shape[3])
+        masks = torch.stack([mask_body0, mask_body1, mask_joint0, mask_joint1], dim=0)
 
-        return frms, skls, flow
+        # dmap0 = skeleton_to_joint_dmap(skls[0], frms.shape[2], frms.shape[3])
+        # dmap1 = skeleton_to_joint_dmap(skls[1], frms.shape[2], frms.shape[3])
+        # dmaps = torch.stack([dmap0, dmap1], dim=0)
+
+        # if self.n_inter > 0:
+        #     skls = torch.stack([add_inter_kp_in_skl(skl, self.adj_pairs, n_inter=self.n_inter) for skl in skls], dim=0)
+        # mask2 = skeleton_to_mask2(skls[0], frms.shape[2], frms.shape[3])
+        # mask3 = skeleton_to_mask2(skls[1], frms.shape[2], frms.shape[3])
+        # masks = torch.stack([mask0, mask1, mask2, mask3], dim=0)
+
+        return frms, skls, flow, masks #, dmaps
     
     def __len__(self):
         return len(self.frm_data)
@@ -79,6 +107,10 @@ if __name__ == '__main__':
         kernel_size= 3
         sigma= 0.1
         p_blur= 0.5
-    d = SubJHMDBDataset('/scratch/PI/cqf/har_data/jhmdb', mode='test', split=1, n_inter=2, all_tsfm=ValAllTransforms(hparams), frm_tsfm=ValFrameTransforms(hparams))
-    frms, skls, flow = d[0]
-    print(frms.shape, skls.shape, flow.shape)
+    d = SubJHMDBDataset('/mnt/home/zpengac/USERDIR/HAR/datasets/jhmdb', mode='test', split=1, n_inter=2, all_tsfm=ValAllTransforms(hparams), frm_tsfm=ValFrameTransforms(hparams))
+    frms, skls, flow, masks = d[0]
+    print(frms.shape, skls.shape, flow.shape, masks.shape)
+    import matplotlib.pyplot as plt
+    mask_bin = (masks > 0.5).float()
+    plt.imsave('mask0.png', mask_bin[0])
+    plt.imsave('mask1.png', mask_bin[1])

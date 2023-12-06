@@ -4,7 +4,7 @@ pretrained: False
 sync_batchnorm: False
 clip_grad: null
 precision: 16
-epochs: 300
+epochs: 100
 # --------------------------------------
 # Dataset parameters
 # --------------------------------------
@@ -15,7 +15,7 @@ n_inter: 2
 # Optimizer parameters
 # --------------------------------------
 optim_name: adamw
-lr: 0.0001
+lr: 0.00001
 weight_decay: 0.001
 momentum: 0.9
 # --------------------------------------
@@ -26,24 +26,30 @@ warmup_lr: 0.000001
 min_lr: 0.00001
 warmup_epochs: 20
 # --------------------------------------
-# Model parameters
+# Segmentation Model parameters
 # --------------------------------------
-model_name: raft_modified
-dropout: 0.0
-alternate_corr: False
+seg_model_name: deeplabv3
+seg_type: resnet50
+seg_pretrained: True
+seg_out_channels: 17
+# --------------------------------------
+# Flow Model parameters
+# --------------------------------------
+flow_model_name: raft
+flow_model_path: /mnt/home/zpengac/USERDIR/HAR/RAFT/models/raft-things.pth
+global_flow: True
+dataset: sintel
 small: False
-mixed_precision: False
 # --------------------------------------
 # Loss parameters
 # --------------------------------------
 gamma: 0.8
 thres_con: 0.9
 n_iters: 12
-sup_weight: 1
-unsup_weight: 1.0e-5
-# dis_weight: 0.1
-con_weight: 1
-point_weight: 1
+w_body: 1.0
+w_joint: 1.0
+w_flow: 0.01
+w_consist: 100.0
 # --------------------------------------
 # Augmentation parameters
 # --------------------------------------

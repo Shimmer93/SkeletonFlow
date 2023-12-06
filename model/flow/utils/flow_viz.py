@@ -17,13 +17,6 @@
 
 import numpy as np
 
-def denormalize(img):
-    # denormalize an image based on ImageNet stats
-    # img = img * np.array([0.229, 0.224, 0.225]).reshape(1, 1, 3)
-    # img = img + np.array([0.485, 0.456, 0.406]).reshape(1, 1, 3)
-    img = img * 255
-    return img.astype(np.uint8)
-
 def make_colorwheel():
     """
     Generates a color wheel for optical flow visualization as presented in:
@@ -137,47 +130,3 @@ def flow_to_image(flow_uv, clip_flow=None, convert_to_bgr=False):
     u = u / (rad_max + epsilon)
     v = v / (rad_max + epsilon)
     return flow_uv_to_colors(u, v, convert_to_bgr)
-
-def generate_random_colors(num_colors):
-    """
-    Generate random colors for drawing masks.
-
-    Args:
-        num_colors (int): Number of random colors to generate.
-
-    Returns:
-        np.ndarray: Random colors of shape [num_colors, 3]
-    """
-    colors = np.random.randint(0, 256, (num_colors, 3), dtype=np.uint8)
-    return colors
-
-def get_predefined_colors(num_kps):
-    color_list = \
-        [[ 34, 74, 243], [197, 105, 1], [23, 129, 240], [188, 126, 228], [115, 121, 232], [142, 144, 20], 
-         [126, 250, 110], [217, 132, 212], [81, 191, 65], [103, 227, 95], [163, 179, 130], [120, 102, 117],
-         [199, 85, 111], [98, 251, 87], [59, 24, 47], [55, 244, 124], [251, 221, 136], [186, 25, 19], 
-         [172, 81, 95], [96, 76, 118], [11, 43, 76], [181, 55, 80], [157, 186, 192], [80, 185, 205],
-         [12, 94, 115], [30, 220, 233], [144, 67, 163], [125, 159, 138], [136, 210, 185], [235, 25, 213]]
-    
-    colors = np.array(color_list[:num_kps])
-    return colors
-
-def mask_to_image(mask, num_kps, convert_to_bgr=False):
-    """
-    Expects a two dimensional mask image of shape.
-
-    Args:
-        mask (np.ndarray): Mask image of shape [H,W]
-        convert_to_bgr (bool, optional): Convert output image to BGR. Defaults to False.
-
-    Returns:
-        np.ndarray: Mask visualization image of shape [H,W,3]
-    """
-    assert mask.ndim == 2, 'input mask must have two dimensions'
-    canvas = np.ones((mask.shape[0], mask.shape[1], 3), np.uint8) * 255
-    colors = get_predefined_colors(num_kps)
-    for i in range(num_kps):
-        canvas[mask == i+1] = colors[i]
-    if convert_to_bgr:
-        canvas = canvas[...,::-1]
-    return canvas

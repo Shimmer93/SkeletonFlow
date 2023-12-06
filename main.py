@@ -19,7 +19,7 @@ def main(args):
         ModelCheckpoint(
             monitor='val_loss',
             dirpath=args.model_ckpt_dir,
-            filename=args.model_name+'-{epoch}-{val_loss:.4f}',
+            filename=args.seg_model_name+'-'+args.flow_model_name+'-{epoch}-{val_loss:.4f}',
             save_top_k=1,
             save_last=True,
             mode='min'),
@@ -83,6 +83,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     cfg = load_cfg(args.cfg)
     args = merge_args_cfg(args, cfg)
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
 
     # please change {WANDB_API_KEY} to your personal api_key before using wandb
     os.environ["WANDB_API_KEY"] = "60b29f8aae47df8755cbd430f0179c0cd8797bf6"

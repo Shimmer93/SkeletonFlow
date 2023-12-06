@@ -430,7 +430,7 @@ class BasicUpdateBlock(nn.Module):
         return net, mask, delta_flow
     
 class MaskDecoder(nn.Module):
-    def __init__(self, small=False):
+    def __init__(self, small=False, num_body_parts=17):
         super(MaskDecoder, self).__init__()
         if small:
             dims = [32, 64, 96]
@@ -461,15 +461,34 @@ class MaskDecoder(nn.Module):
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
         )
 
-        self.conv = nn.Conv2d(dims[0], 1, kernel_size=1, padding=0)
+        self.conv_coarse = nn.Sequential(
+            nn.Conv2d(dims[0], dims[0], 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(dims[0], dims[0]//2, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(dims[0]//2, 1, kernel_size=1, padding=0)
+        )
+        
+        self.conv_fine = nn.Sequential(
+            nn.Conv2d(dims[0], dims[0], 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(dims[0], dims[0]//2, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(dims[0]//2, num_body_parts, kernel_size=1, padding=0)
+        )
+        
+        self.softmax = nn.Softmax(dim=1)
         # self.sigmoid = nn.Sigmoid()
 
     def forward(self, x1, x2, x3):
         x = self.dec3(x3)
         x = self.dec2(torch.cat([x, x2], dim=1))
         x = self.dec1(torch.cat([x, x1], dim=1))
-        x = self.conv(x)
+        x_coarse = self.conv_coarse(x)
+        x_fine = self.conv_fine(x)
+        x_fine = self.softmax(x_fine)
         # x = self.sigmoid(self.conv(x))
+        x = torch.cat([x_coarse, x_fine], dim=1)
         return x
 
 class RAFT_Modified(nn.Module):
@@ -506,7 +525,7 @@ class RAFT_Modified(nn.Module):
             self.cnet = BasicEncoder(output_dim=hdim+cdim, norm_fn='batch', dropout=args.dropout)
             self.update_block = BasicUpdateBlock(self.args, hidden_dim=hdim)
 
-        self.mask_dec = MaskDecoder(small=args.small)
+        self.mask_dec = MaskDecoder(small=args.small, num_body_parts=args.num_body_parts)
 
     def freeze_bn(self):
         for m in self.modules():

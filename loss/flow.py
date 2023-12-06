@@ -114,7 +114,7 @@ class UnsupLoss(nn.Module):
 
         factor = torch.FloatTensor([[[[2 / w, 2 / h]]]]).to(flow.device)
         grid = grid * factor - 1
-        warped_frm = F.grid_sample(frm, grid)
+        warped_frm = F.grid_sample(frm, grid, align_corners=True)
 
         return warped_frm
     
@@ -314,34 +314,39 @@ class PointSegLoss(nn.Module):
         super(PointSegLoss, self).__init__()
         self.criterion = nn.BCEWithLogitsLoss()
 
-    def forward(self, masks, skls, flows):
-        # masks: B, 1, H, W
+    def forward(self, masks, skls, gt_masks):
+        # masks: B, H, W
         # skls: B, J, D
-        # flows: B, 2, H, W
+        # gt_masks: B, H, W
 
         # print(masks.shape, skls.shape, flows.shape)
 
-        flow_masks = torch.sum(flows**2, dim=1, keepdim=True) > 0
+        h, w = masks.size(1), masks.size(2)
+
+        flow_masks = (gt_masks > 0)
+
         y_mins = torch.min(skls[:, :, 1], dim=1)[0].type(torch.int)
         y_maxs = torch.max(skls[:, :, 1], dim=1)[0].type(torch.int)
         x_mins = torch.min(skls[:, :, 0], dim=1)[0].type(torch.int)
         x_maxs = torch.max(skls[:, :, 0], dim=1)[0].type(torch.int)
-        h, w = flows.size(2), flows.size(3)
 
         # print(y_mins.shape)
 
         neg_masks = []
         for(i, (y_min, y_max, x_min, x_max)) in enumerate(zip(y_mins, y_maxs, x_mins, x_maxs)):
+            num_samples = flow_masks[i].sum()
             choices = torch.arange(0, h*w).view(h, w)
             choices[y_min:y_max, x_min:x_max] = -1
             choices = choices[choices != -1].flatten()
-            idxs = torch.randperm(len(choices))[:skls.size(1)]
+            idxs = torch.randperm(len(choices))[:num_samples]
             samples = choices[idxs]
             canvas = torch.zeros(h*w).to(skls.device)
             canvas[samples] = 1
-            canvas = canvas.view(1, 1, h, w)
+            canvas = canvas.view(1, h, w)
             neg_masks.append(canvas)
         neg_masks = torch.cat(neg_masks, dim=0).to(dtype=torch.bool)
+
+        # print(f'masks: {masks.shape}, flow_masks: {flow_masks.shape}, neg_masks: {neg_masks.shape}')
 
         pos_preds = masks[flow_masks]
         pos_gts = torch.ones_like(pos_preds)
@@ -354,7 +359,61 @@ class PointSegLoss(nn.Module):
         loss = pos_loss + neg_loss
 
         return loss
+    
+class PointSegLoss2(nn.Module):
+    def __init__(self):
+        super(PointSegLoss2, self).__init__()
+        self.criterion = nn.CrossEntropyLoss()
 
+    def forward(self, masks, skls, gt_masks):
+        # masks: B, J, H, W
+        # skls: B, J, D
+        # gt_masks: B, H, W
+
+        # print(masks.shape, skls.shape, flows.shape)
+        h, w = masks.size(2), masks.size(3)
+
+        flow_masks = (gt_masks > 0)
+
+        # y_mins = torch.min(skls[:, :, 1], dim=1)[0].type(torch.int)
+        # y_maxs = torch.max(skls[:, :, 1], dim=1)[0].type(torch.int)
+        # x_mins = torch.min(skls[:, :, 0], dim=1)[0].type(torch.int)
+        # x_maxs = torch.max(skls[:, :, 0], dim=1)[0].type(torch.int)
+
+        # # print(y_mins.shape)
+
+        # neg_masks = []
+        # for(i, (y_min, y_max, x_min, x_max)) in enumerate(zip(y_mins, y_maxs, x_mins, x_maxs)):
+        #     choices = torch.arange(0, h*w).view(h, w)
+        #     choices[y_min:y_max, x_min:x_max] = -1
+        #     choices = choices[choices != -1].flatten()
+        #     idxs = torch.randperm(len(choices))[:10]
+        #     samples = choices[idxs]
+        #     canvas = torch.zeros(h*w).to(skls.device)
+        #     canvas[samples] = 1
+        #     canvas = canvas.view(1, h, w)
+        #     neg_masks.append(canvas)
+        # neg_masks = torch.cat(neg_masks, dim=0).to(dtype=torch.bool)
+
+        # print(f'gt_masks: {gt_masks.shape}, flow_masks: {flow_masks.shape}, neg_masks: {neg_masks.shape}')
+
+        masks_ = masks.transpose(0, 1)
+        pos_preds = masks_[:, flow_masks].transpose(0, 1)
+        pos_gts = gt_masks[flow_masks].long() - 1
+        # neg_preds = masks_[:, neg_masks].transpose(0, 1)
+        # neg_gts = torch.zeros_like(neg_preds[:, 0])
+        # preds = torch.cat([pos_preds, neg_preds], dim=0)
+        # gts = torch.cat([pos_gts, neg_gts], dim=0).long()
+
+        # for i in range(masks.size(1)):
+        #     print(f'{len(gts[gts==i])}_{len(preds[preds==i])}', end=' ')
+        # print()
+
+        # print(f'pos_preds: {pos_preds.shape}, pos_gts: {pos_gts.shape}, neg_preds: {neg_preds.shape}, neg_gts: {neg_gts.shape}')
+
+        loss = self.criterion(pos_preds, pos_gts)
+
+        return loss
 
 if __name__ == '__main__':
     gamma = 0.8
