@@ -8,7 +8,7 @@ import json
 
 import sys
 sys.path.append('/mnt/home/zpengac/USERDIR/HAR/SkeletonFlow')
-from data.utils import read_image, skeletons_to_flow, add_inter_kp_in_skl, skeleton_to_body_mask, skeleton_to_joint_mask, skeleton_to_joint_dmap
+from data.utils import read_image, skeletons_to_flow, add_inter_kp_in_skl, skeleton_to_body_mask, skeleton_to_joint_mask
 
 class SubJHMDBDataset(Dataset):
     def __init__(self, data_dir, mode='train', split=1, n_inter=2, all_tsfm=None, frm_tsfm=None):
@@ -34,6 +34,7 @@ class SubJHMDBDataset(Dataset):
             'right upper leg': [[6, 10]],
             'right lower leg': [[10, 14]]
         }
+        self.joint_groups = [[0], [1], [2], [3, 4], [5, 6], [7, 8], [9, 10], [11, 12], [13, 14]]
 
         # train_test = 'train' if mode in ['train', 'val'] else 'test'
         train_test = 'train' if mode == 'train' else 'test'
@@ -72,19 +73,11 @@ class SubJHMDBDataset(Dataset):
         mask_body1 = skeleton_to_body_mask(skls[1], self.body_parts, frms.shape[2], frms.shape[3])
         mask_joint0 = skeleton_to_joint_mask(skls[0], frms.shape[2], frms.shape[3])
         mask_joint1 = skeleton_to_joint_mask(skls[1], frms.shape[2], frms.shape[3])
-        masks = torch.stack([mask_body0, mask_body1, mask_joint0, mask_joint1], dim=0)
+        masks_body = torch.stack([mask_body0, mask_body1], dim=0)
+        masks_joint = torch.cat([mask_joint0, mask_joint1], dim=0)
+        masks = torch.cat([masks_body, masks_joint], dim=0)
 
-        # dmap0 = skeleton_to_joint_dmap(skls[0], frms.shape[2], frms.shape[3])
-        # dmap1 = skeleton_to_joint_dmap(skls[1], frms.shape[2], frms.shape[3])
-        # dmaps = torch.stack([dmap0, dmap1], dim=0)
-
-        # if self.n_inter > 0:
-        #     skls = torch.stack([add_inter_kp_in_skl(skl, self.adj_pairs, n_inter=self.n_inter) for skl in skls], dim=0)
-        # mask2 = skeleton_to_mask2(skls[0], frms.shape[2], frms.shape[3])
-        # mask3 = skeleton_to_mask2(skls[1], frms.shape[2], frms.shape[3])
-        # masks = torch.stack([mask0, mask1, mask2, mask3], dim=0)
-
-        return frms, skls, flow, masks #, dmaps
+        return frms, skls, flow, masks
     
     def __len__(self):
         return len(self.frm_data)

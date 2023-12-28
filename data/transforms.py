@@ -17,10 +17,10 @@ def random_hflip(frms, skls, flip_idxs=None, p=0.5):
 
     return frms, skls
 
-def random_crop(frms, skls):
+def random_crop(frms, skls, p=0.5):
     # frm: numpy array of shape N H W C
     # skl: numpy array of shape N J D
-
+    
     h, w = frms.shape[1:3]
     x_min = np.maximum(int(np.min(skls[..., 0])), 0)
     x_max = np.minimum(int(np.max(skls[..., 0])) + 1, w)
@@ -29,7 +29,10 @@ def random_crop(frms, skls):
 
     c_size_min = np.maximum(x_max - x_min, y_max - y_min)
     c_size_max = np.minimum(h, w)
-    c_size = npr.randint(c_size_min, c_size_max + 1)
+    if npr.rand() < p:
+        c_size = npr.randint(c_size_min, c_size_max + 1)
+    else:
+        c_size = c_size_max
 
     x0 = npr.randint(np.maximum(x_max - c_size, 0), np.minimum(x_min, w - c_size) + 1)
     y0 = npr.randint(np.maximum(y_max - c_size, 0), np.minimum(y_min, h - c_size) + 1)
@@ -59,7 +62,7 @@ class TrainAllTransforms():
 
     def __call__(self, frms, skls, flip_idxs=None):
         frms, skls = random_hflip(frms, skls, flip_idxs)
-        frms, skls = random_crop(frms, skls)
+        frms, skls = random_crop(frms, skls, p=self.hparams.p_crop)
         frms, skls = resize(frms, skls, self.hparams.input_size)
 
         frms = torch.stack([T.ToTensor()(frm) for frm in frms], dim=0)

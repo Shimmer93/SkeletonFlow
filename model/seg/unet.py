@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import models
+import math
 
 def upsample(x, ratio=2):
     return F.interpolate(x, scale_factor=ratio, mode='bilinear', align_corners=True)
@@ -26,6 +27,8 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
         if 'resnet' in type:
             self._init_resnet(type, pretrained)
+        elif 'vgg' in type:
+            self._init_vgg(type, pretrained)
         else:
             raise NotImplementedError
     
@@ -47,6 +50,18 @@ class Encoder(nn.Module):
 
         self.enc_dims = [256, 512, 1024]
 
+    def _init_vgg(self, type, pretrained):
+        if type == 'vgg16_bn':
+            vgg = models.vgg16_bn(weights=models.VGG16_BN_Weights.DEFAULT if pretrained else None)
+        else:
+            raise NotImplementedError
+        vgg = nn.Sequential(*list(vgg.children()))
+        self.enc1 = vgg[:23]
+        self.enc2 = vgg[23:33]
+        self.enc3 = vgg[33:43]
+
+        self.enc_dims = [256, 512, 512]
+    
     def forward(self, x):
         x1 = self.enc1(x)
         x2 = self.enc2(x1)
@@ -59,8 +74,8 @@ class Decoder(nn.Module):
         self.enc_dims = enc_dims
         
         self.dec3 = nn.Sequential(
-            ConvBlock(self.enc_dims[2], 2 * self.enc_dims[2]),
-            ConvBlock(2 * self.enc_dims[2], self.enc_dims[2])
+            ConvBlock(self.enc_dims[2], self.enc_dims[2]),
+            ConvBlock(self.enc_dims[2], self.enc_dims[2])
         )
 
         self.dec2 = nn.Sequential(
@@ -81,29 +96,91 @@ class Decoder(nn.Module):
         x = upsample(x)
         x = torch.cat([x, x1], dim=1)
         x = self.dec1(x)
-        x = upsample(x, ratio=4)
+        # x = upsample(x, ratio=4)
         return x
     
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_h, max_w):
+        super().__init__()
+        self.d_model = d_model
+        self.max_h = max_h
+        self.max_w = max_w
+
+        # create positional encoding matrix for height dimension
+        pe_h = torch.zeros(max_h, d_model)
+        position_h = torch.arange(0, max_h, dtype=torch.float).unsqueeze(1)
+        div_term_h = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe_h[:, 0::2] = torch.sin(position_h * div_term_h)
+        pe_h[:, 1::2] = torch.cos(position_h * div_term_h)
+        self.register_buffer('pe_h', pe_h)
+
+        # create positional encoding matrix for width dimension
+        pe_w = torch.zeros(max_w, d_model)
+        position_w = torch.arange(0, max_w, dtype=torch.float).unsqueeze(1)
+        div_term_w = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe_w[:, 0::2] = torch.sin(position_w * div_term_w)
+        pe_w[:, 1::2] = torch.cos(position_w * div_term_w)
+        self.register_buffer('pe_w', pe_w)
+
+    def forward(self, x):
+        # get shape of input tensor
+        B, C, H, W = x.shape
+
+        # create positional encoding for height dimension
+        pe_h = self.pe_h[:H, :].T.unsqueeze(0).unsqueeze(-1)
+
+        # create positional encoding for width dimension
+        pe_w = self.pe_w[:W, :].T.unsqueeze(0).unsqueeze(-2)
+
+        # concatenate positional encodings and add to input tensor
+        x = x + pe_h.to(x.device) + pe_w.to(x.device)
+
+        return x
+
 class Head(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(Head, self).__init__()
         self.head = nn.Sequential(
             ConvBlock(in_channels, in_channels),
-            ConvBlock(in_channels, out_channels, kernel_size=1, padding=0, bn=False, relu=False)
+            ConvBlock(in_channels, in_channels)
+        )
+        self.last_layer = ConvBlock(in_channels, out_channels, kernel_size=1, padding=0, bn=False, relu=False)
+        # self.pos_enc = PositionalEncoding(in_channels, 512, 512)
+    
+    def forward(self, x, return_features=False):
+        # x = self.pos_enc(x)
+        f = self.head(x)
+        y = self.last_layer(f)
+
+        if return_features:
+            return y, f
+        else:
+            return y
+        
+class FeatureHead(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(FeatureHead, self).__init__()
+        self.head = nn.Sequential(
+            ConvBlock(in_channels, in_channels),
+            ConvBlock(in_channels, in_channels)
         )
     
     def forward(self, x):
         return self.head(x)
 
 class UNet(nn.Module):
-    def __init__(self, type='resnet50', pretrained=True, out_channels=2):
+    def __init__(self, type='resnet50', pretrained=True, num_joints=15):
         super(UNet, self).__init__()
         self.encoder = Encoder(type=type, pretrained=pretrained)
         self.decoder = Decoder(self.encoder.enc_dims)
-        self.head = Head(self.encoder.enc_dims[0], out_channels)
+        self.head_body = FeatureHead(self.encoder.enc_dims[0], 1)
+        self.head_joint = FeatureHead(self.encoder.enc_dims[0], num_joints)
 
     def forward(self, x):
         x1, x2, x3 = self.encoder(x)
         x = self.decoder(x1, x2, x3)
-        x = self.head(x)
-        return x
+        f_body = self.head_body(x)
+        f_joint = self.head_joint(x)
+        # x = torch.cat([x_flow, x_body_joint], dim=1)
+        # x = upsample(x, ratio=4)
+        return f_body, f_joint

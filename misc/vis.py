@@ -181,3 +181,14 @@ def mask_to_image(mask, num_kps, convert_to_bgr=False):
     if convert_to_bgr:
         canvas = canvas[...,::-1]
     return canvas
+
+def mask_to_joint_images(masks, num_kps, convert_to_bgr=False):
+    assert masks.ndim == 3, 'input mask must have three dimensions'
+    assert masks.shape[0] == num_kps, 'input mask must have shape [num_kps, H, W]'
+    canvas = np.ones((num_kps, masks.shape[1], masks.shape[2], 3), np.uint8) * 255
+    colors = get_predefined_colors(num_kps)
+    for i in range(num_kps):
+        canvas[i, masks[i] == 1] = colors[i]
+    if convert_to_bgr:
+        canvas = canvas[...,::-1]
+    return canvas

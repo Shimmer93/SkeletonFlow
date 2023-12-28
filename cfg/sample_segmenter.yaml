@@ -4,7 +4,7 @@ pretrained: False
 sync_batchnorm: False
 clip_grad: null
 precision: 16
-epochs: 100
+epochs: 200
 # --------------------------------------
 # Dataset parameters
 # --------------------------------------
@@ -28,10 +28,16 @@ warmup_epochs: 20
 # --------------------------------------
 # Segmentation Model parameters
 # --------------------------------------
-seg_model_name: unet
-seg_type: resnet50
-seg_pretrained: True
-num_joints: 15
+seg_model_name: segmenter
+patch_size: 16
+n_layers_encoder: 12
+n_layers_decoder: 2
+d_model: 384
+n_heads: 6
+seg_out_channels: 17
+dropout: 0.1
+drop_path_rate: 0.1
+variant: vit_small_patch16_224
 # --------------------------------------
 # Flow Model parameters
 # --------------------------------------
@@ -41,40 +47,23 @@ global_flow: True
 dataset: sintel
 small: False
 # --------------------------------------
-# Model Head parameters
-# --------------------------------------
-corr_levels: 4
-corr_radius: 4
-hidden_dim: 128
-sf_dim: 256
-# --------------------------------------
 # Loss parameters
 # --------------------------------------
 gamma: 0.8
 thres_con: 0.9
 n_iters: 12
 w_body: 1.0
-w_joint: 0.1
+w_joint: 1.0
 w_flow: 1.0
-w_consist: 10.0
-w_weak: 0.01
-alpha_lr: 1.0
-alpha_group: 0.2
-# Body loss
-w_neg_body: 1.0
-w_unsup_body: 1.0
-# Joint loss
-w_neg_joint: 5.0
+w_consist: 100.0
 # --------------------------------------
 # Augmentation parameters
 # --------------------------------------
 input_size: [224, 224]
-# Random crop
-p_crop: 0.5
 # Color jitter
-brightness: 0.2
-contrast: 0.2
-saturation: 0.2
+brightness: 0.4
+contrast: 0.4
+saturation: 0.4
 hue: 0.1
 p_jitter: 0.5
 # Blur

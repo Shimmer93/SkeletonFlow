@@ -84,7 +84,9 @@ class RAFT(nn.Module):
         cdim = self.context_dim
 
         # run the feature network
-        fmap1, fmap2 = self.fnet([image1, image2])        
+        fmap1, fmap2 = self.fnet([image1, image2])
+
+        # print(f'fmap1.shape: {fmap1.shape}')  
         
         fmap1 = fmap1.float()
         fmap2 = fmap2.float()
@@ -95,9 +97,12 @@ class RAFT(nn.Module):
 
         # run the context network
         cnet = self.cnet(image1)
+        # print(f'cnet.shape: {cnet.shape}')
         net, inp = torch.split(cnet, [hdim, cdim], dim=1)
         net = torch.tanh(net)
         inp = torch.relu(inp)
+        # print(f'net.shape: {net.shape}')
+        # print(f'inp.shape: {inp.shape}')
 
         coords0, coords1 = self.initialize_flow(image1)
 
@@ -108,6 +113,8 @@ class RAFT(nn.Module):
         for itr in range(iters):
             coords1 = coords1.detach()
             corr = corr_fn(coords1) # index correlation volume
+
+            # print(f'corr.shape: {corr.shape}')
 
             flow = coords1 - coords0
             net, up_mask, delta_flow = self.update_block(net, inp, corr, flow)
@@ -123,7 +130,9 @@ class RAFT(nn.Module):
             
             flow_predictions.append(flow_up)
 
+        flow = coords1 - coords0
+
         if test_mode:
-            return coords1 - coords0, flow_up
+            return [coords1 - coords0, flow_up], (net, corr, flow)
             
-        return flow_predictions
+        return flow_predictions, (net, corr, flow)

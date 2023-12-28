@@ -1,6 +1,186 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from einops import rearrange
+
+def entropy(x, dim=-1):
+    return  - torch.sum(F.softmax(x, dim=dim) * F.log_softmax(x, dim=dim), dim=dim)
+
+def distilled_cross_entropy(l, p, tl=1.0, tp=1.0, mask=None):
+    # KL divergence
+    """
+    l: [*, d]
+    p: [*, d]
+    return: [*]
+    """
+    if mask is not None:
+        l = F.softmax(l / tl * mask, dim=-1) * mask
+        p = F.log_softmax(p / tp * mask, dim=-1) * mask
+        loss = torch.sum(-l * p, dim=-1)
+        return loss
+    else:
+        l = F.softmax(l / tl, dim=-1)
+        p = F.log_softmax(p / tp, dim=-1)
+        loss = torch.sum(-l * p, dim=-1)
+        return loss
+
+
+def make_feature_sim_grid(features, kernel_size=9, stride=None, reference_features=None, 
+                        saliency_mask=None, feat_center_detach=False, feat_center_smooth=False):
+    # features: [N, C, H, W]
+    stride = stride or (kernel_size // 3)
+    C, H, W = features.shape[1:]
+
+    features = F.normalize(features, dim=1)
+    feat_blocks = F.unfold(features, kernel_size=kernel_size, stride=stride)
+    
+    feat_blocks = rearrange(feat_blocks, 'N (c w) L -> (N L) w c', c=C)
+    center_ind = feat_blocks.shape[1] // 2
+
+    if reference_features is None:
+        if saliency_mask is None:
+            feat_centers = feat_blocks[:, center_ind, :][:, None, :]  # (N L) 1 c
+        else:
+            # N, H, W -> N, 1, H, W
+            if len(saliency_mask.shape) > 1:
+                feat_centers = (feat_blocks * saliency_mask).sum(dim=1, keepdim=True)
+            else:
+                feat_centers = feat_blocks[torch.arange(0, len(feat_blocks), device=feat_blocks.device), saliency_mask, :][:, None, :]
+    else:
+        assert saliency_mask is None
+        reference_features = F.normalize(reference_features, dim=1)
+        ref_feat_blocks = F.unfold(reference_features, kernel_size=kernel_size, stride=stride)
+        ref_feat_blocks = rearrange(ref_feat_blocks, 'N (c w) L -> (N L) w c', c=C)
+        feat_centers = ref_feat_blocks[:, center_ind, :][:, None, :]  # (N L) 1 c
+    
+    if feat_center_detach:
+        feat_centers = feat_centers.detach()
+        
+    grid = (feat_centers * feat_blocks).sum(dim=-1) # dot product
+    if feat_center_smooth:
+        idx = torch.arange(0, len(feat_blocks), device=feat_blocks.device)
+        grid[idx, saliency_mask] = 0
+        grid[idx, saliency_mask] = grid.max(dim=1).values
+
+    grid = rearrange(grid, '(N h w) (k1 k2) -> N h w k1 k2', k1=kernel_size, k2=kernel_size, 
+                     h=int((H-1-(kernel_size-1)) / stride + 1), w=int((W-1-(kernel_size-1)) / stride + 1))
+    return grid
+    
+@torch.no_grad()
+def make_optical_flow_grid(flow, kernel_size=9, stride=None,
+                           static_threshold=0.1, target_size=None, radius=1.0, return_norm_map=False,
+                           normalize=True, maximum_norm=None, return_norm_blocks=False, eps=1e-6,
+                           saliency_mask=None, device=None):
+    # flow: [N, 2, H, W]
+    stride = stride or (kernel_size // 3)
+
+    if target_size is not None:
+        flow = F.interpolate(flow, target_size, mode='bicubic')
+    
+    if device is not None:
+        flow = flow.to(device)
+
+    H, W = flow.shape[2:]
+    if normalize:
+        rescale_flow = flow - flow.flatten(2).mean(dim=2)[..., None, None]  # N, 2, 1, 1
+    else:
+        rescale_flow = flow
+    rescale_flow_norm = rescale_flow.norm(dim=1, keepdim=True)
+    rescale_flow_norm /= (eps + (rescale_flow_norm.flatten(1).max(dim=1, keepdim=True).values[..., None, None] if maximum_norm is None else maximum_norm.view(-1)[:, None, None, None])).to(rescale_flow_norm.device)
+    flow_norm = F.relu(rescale_flow_norm - static_threshold)
+
+    if return_norm_map:
+        return flow_norm 
+
+    flow_blocks = F.unfold(flow, kernel_size=kernel_size, stride=stride)
+    flow_norm_blocks = F.unfold(flow_norm, kernel_size=kernel_size, stride=stride)
+    
+    flow_blocks = rearrange(flow_blocks, 'N (c w) L -> (N L) w c', c=2)
+    flow_norm_blocks = rearrange(flow_norm_blocks, 'N w L -> (N L) w')
+    center_ind = flow_blocks.shape[1] // 2
+
+    if saliency_mask is None:
+        flow_centers = flow_blocks[:, center_ind, :][:, None, :]
+    else:
+        if len(saliency_mask.shape) > 1:
+            flow_centers = (flow_blocks * saliency_mask).sum(dim=1, keepdim=True)
+        else:
+            flow_centers = flow_blocks[torch.arange(0, len(flow_blocks), device=flow_blocks.device), saliency_mask, :][:, None, :]
+
+    weight = torch.exp(- torch.abs(1 - F.cosine_similarity(flow_centers, flow_blocks, dim=2).clamp_(0.0, 1.0)) / radius)
+    grid = weight * flow_norm_blocks
+    h=int((H-1-(kernel_size-1)) / stride + 1)
+    w=int((W-1-(kernel_size-1)) / stride + 1)
+    grid = rearrange(grid, '(N h w) (k1 k2) -> N h w k1 k2', k1=kernel_size, k2=kernel_size, h=h, w=w)
+                
+    if return_norm_blocks:
+        return grid, rearrange(flow_norm_blocks, '(N h w) (k1 k2) -> N h w k1 k2', k1=kernel_size, k2=kernel_size, h=h, w=w) 
+    else:
+        return grid
+
+class FlowLoss(nn.Module):
+    def __init__(self, flow_temp=0.1, radius=0.7, kernel_size=3, stride=2, loss_weight_mode='norm',
+                loss_weight_margin=0.01, static_threshold=0.1):
+        super().__init__()
+        self.flow_temp = flow_temp
+        self.radius = radius
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.loss_weight_margin = loss_weight_margin
+        self.static_threshold = static_threshold
+        self.loss_weight_mode = loss_weight_mode
+
+        self.maximum_entropy = entropy(torch.zeros(1, kernel_size ** 2), dim=-1).item()
+    
+    
+    def forward(self, feat, flow, max_norm, ref_feat=None, mask=None):
+        H, W = feat.shape[1], feat.shape[2]
+        saliency = feat[:, :, :, -1]
+        feat = feat[:, :, :, :-1]
+        saliency = saliency.detach()
+        saliency = saliency[:, None, :, :]
+        sal_blocks = F.unfold(saliency, kernel_size=self.kernel_size, stride=self.stride)
+        sal_blocks = rearrange(sal_blocks, 'N w L -> (N L) w')
+        saliency_mask = sal_blocks.argmax(dim=1)
+
+        flow_grid = make_optical_flow_grid(flow, target_size=(H, W), stride=self.stride, radius=self.radius,
+                            normalize=False, kernel_size=self.kernel_size, saliency_mask=saliency_mask,
+                            maximum_norm=max_norm, static_threshold=self.static_threshold, device=feat.device)
+        h, w = flow_grid.shape[1:3]
+        # flow_grid = flow_grid.cuda()
+        feat = feat.permute(0, 3, 1, 2) # -> N, C, H, W
+        flow_grid = flow_grid.flatten(3) # N, h, w, kh*kw
+        feat_grid = make_feature_sim_grid(feat, kernel_size=self.kernel_size, stride=self.stride, saliency_mask=saliency_mask,
+                                        reference_features=ref_feat.permute(0, 3, 1, 2) if ref_feat is not None else None)
+        # (N, h*w)
+        if self.loss_weight_mode == 'norm':
+            flow_w = flow_grid.mean(dim=-1).flatten(1)
+            flow_w = F.relu(flow_w - self.loss_weight_margin, inplace=True)
+            eps = 1e-6
+            flow_w.div_(flow_w.sum(dim=1, keepdim=True) + eps)
+        elif self.loss_weight_mode == 'entropy':
+            assert self.loss_weight_mode == 'entropy'
+            flow_w = flow_grid.view(-1, h * w, self.kernel_size ** 2)
+            flow_w = F.relu(self.maximum_entropy - entropy(flow_w, dim=-1)) # N, (h, w)
+            eps = 1e-6
+            flow_w.div_(flow_w.sum(dim=1, keepdim=True) + eps)
+        else:
+            flow_w = None
+        
+        if mask is not None:
+            mask_blocks = F.unfold(mask, kernel_size=self.kernel_size, stride=self.stride)
+            mask_blocks = rearrange(mask_blocks, 'N k (h w) -> N h w k', h=h, w=w)
+        else:
+            mask_blocks = None
+
+        # (N, h*w)
+        flat_corr_loss = distilled_cross_entropy(flow_grid, feat_grid.flatten(3), tl=self.flow_temp, tp=self.flow_temp, mask=mask_blocks).flatten(1) 
+        if flow_w is None:
+            flat_corr_loss = flat_corr_loss.mean(dim=1)
+        else:
+            flat_corr_loss = (flat_corr_loss * flow_w).sum(dim=1)
+
+        return torch.nan_to_num(flat_corr_loss).mean()
 
 def EPE(flow_pred, flow_true, mask=None, real=False):
 

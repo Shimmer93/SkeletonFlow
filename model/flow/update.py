@@ -126,6 +126,7 @@ class BasicUpdateBlock(nn.Module):
 
     def forward(self, net, inp, corr, flow, upsample=True):
         motion_features = self.encoder(flow, corr)
+        # print(f'motion_features.shape: {motion_features.shape}')
         inp = torch.cat([inp, motion_features], dim=1)
 
         net = self.gru(net, inp)
@@ -134,6 +135,46 @@ class BasicUpdateBlock(nn.Module):
         # scale mask to balence gradients
         mask = .25 * self.mask(net)
         return net, mask, delta_flow
+    
+class FlowMaskHead(nn.Module):
+    def __init__(self, args, hidden_dim=128, up_ratio=8):
+        super(FlowMaskHead, self).__init__()
+        self.encoder = BasicMotionEncoder(args)
+        self.conv1 = nn.Conv2d(128+128, hidden_dim, 3, padding=1)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(hidden_dim, 1, 1, padding=0)
+        self.up_ratio = up_ratio
+        
+    def forward(self, net, corr, flow):
+        motion_features = self.encoder(flow, corr) # 128
+        f = torch.cat([net, motion_features], dim=1) # 128 + 128
+        f = self.relu(self.conv1(f))
+        mask = self.conv2(f)
+        mask = F.interpolate(mask, scale_factor=self.up_ratio, mode='bilinear', align_corners=False)
+        return mask, f
+    
+class BodyMaskHead(nn.Module):
+    def __init__(self, args, hidden_dim=128, sf_dim=128, up_ratio=8):
+        super(BodyMaskHead, self).__init__()
+        self.encoder = BasicMotionEncoder(args)
+        self.conv1 = nn.Conv2d(128+128, hidden_dim, 3, padding=1)
+        self.relu1 = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(hidden_dim+sf_dim, hidden_dim, 3, padding=1)
+        self.relu2 = nn.ReLU(inplace=True)
+        self.conv3 = nn.Conv2d(hidden_dim, 1, 1, padding=0)
+        self.up_ratio = up_ratio
+
+    def forward(self, net, corr, flow, sf):
+        motion_features = self.encoder(flow, corr) # 128
+        f = torch.cat([net, motion_features], dim=1) # 128 + 128
+        f = self.relu1(self.conv1(f)) 
+        sf = F.interpolate(sf, size=f.shape[2:], mode='bilinear', align_corners=False)
+        f = torch.cat([f, sf], dim=1)
+        f = self.relu2(self.conv2(f))
+        mask = self.conv3(f)
+        mask = F.interpolate(mask, scale_factor=self.up_ratio, mode='bilinear', align_corners=False)
+        return mask
+
 
 
 

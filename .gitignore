@@ -4,6 +4,7 @@
 wandb/
 model_ckpt/
 lightning_logs/
+slurm_logs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

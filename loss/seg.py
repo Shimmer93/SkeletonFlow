@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
+import matplotlib.pyplot as plt
+
 class BodySegLoss(nn.Module):
     def __init__(self):
         super(BodySegLoss, self).__init__()
@@ -17,35 +19,35 @@ class BodySegLoss(nn.Module):
 
         pos_masks = (gt_masks > 0)
 
-        neg_masks = (gt_masks == 0)
+        # neg_masks = (gt_masks == 0)
 
-        # y_mins = torch.min(skls[:, :, 1], dim=1)[0].type(torch.int)
-        # y_maxs = torch.max(skls[:, :, 1], dim=1)[0].type(torch.int)
-        # x_mins = torch.min(skls[:, :, 0], dim=1)[0].type(torch.int)
-        # x_maxs = torch.max(skls[:, :, 0], dim=1)[0].type(torch.int)
+        y_mins = torch.min(skls[:, :, 1], dim=1)[0].type(torch.int)
+        y_maxs = torch.max(skls[:, :, 1], dim=1)[0].type(torch.int)
+        x_mins = torch.min(skls[:, :, 0], dim=1)[0].type(torch.int)
+        x_maxs = torch.max(skls[:, :, 0], dim=1)[0].type(torch.int)
 
-        # y_mins = torch.clamp(y_mins - 10, min=0)
-        # y_maxs = torch.clamp(y_maxs + 10, max=h)
-        # x_mins = torch.clamp(x_mins - 10, min=0)
-        # x_maxs = torch.clamp(x_maxs + 10, max=w)
+        y_mins = torch.clamp(y_mins - 10, min=0)
+        y_maxs = torch.clamp(y_maxs + 10, max=h)
+        x_mins = torch.clamp(x_mins - 10, min=0)
+        x_maxs = torch.clamp(x_maxs + 10, max=w)
 
         # neg_masks = torch.ones_like(gt_masks, dtype=torch.bool)
         # for i in range(masks.size(0)):
         #     neg_masks[i, y_mins[i]:y_maxs[i], x_mins[i]:x_maxs[i]] = 0
 
-        # neg_masks = []
-        # for pos_mask in pos_masks:
-        #     num_samples = pos_mask.sum()
-        #     choices = torch.arange(0, h*w).view(h, w)
-        #     choices[pos_mask] = -1
-        #     choices = choices[choices != -1].flatten()
-        #     idxs = torch.randperm(len(choices))[:num_samples]
-        #     samples = choices[idxs]
-        #     canvas = torch.zeros(h*w).to(masks.device)
-        #     canvas[samples] = 1
-        #     canvas = canvas.view(1, h, w)
-        #     neg_masks.append(canvas)
-        # neg_masks = torch.cat(neg_masks, dim=0).to(dtype=torch.bool)
+        neg_masks = []
+        for pos_mask in pos_masks:
+            num_samples = pos_mask.sum()
+            choices = torch.arange(0, h*w).view(h, w)
+            choices[pos_mask] = -1
+            choices = choices[choices != -1].flatten()
+            idxs = torch.randperm(len(choices))[:num_samples]
+            samples = choices[idxs]
+            canvas = torch.zeros(h*w).to(masks.device)
+            canvas[samples] = 1
+            canvas = canvas.view(1, h, w)
+            neg_masks.append(canvas)
+        neg_masks = torch.cat(neg_masks, dim=0).to(dtype=torch.bool)
 
         pos_preds = masks[pos_masks]
         pos_gts = torch.ones_like(pos_preds)
@@ -73,9 +75,10 @@ class JointRegLoss(nn.Module):
         return loss
 
 class JointSegLoss(nn.Module):
-    def __init__(self):
+    def __init__(self, alpha=0.2):
         super(JointSegLoss, self).__init__()
         self.criterion = nn.BCEWithLogitsLoss()
+        self.alpha = alpha
 
     def forward(self, skls, masks, gt_masks):
         # skls: B J 2
@@ -98,20 +101,28 @@ class JointSegLoss(nn.Module):
         for i in range(masks.size(1)):
             pos_masks = (gt_masks == i+1)
 
-            neg_masks = torch.zeros_like(gt_masks, dtype=torch.bool)
-            for j in range(masks.size(0)):
-                neg_masks[j, y_mins[j]:y_maxs[j], x_mins[j]:x_maxs[j]] = 1
-            neg_masks = neg_masks ^ pos_masks
+            # neg_masks1 = torch.zeros_like(gt_masks, dtype=torch.bool)
+            # for j in range(masks.size(0)):
+            #     neg_masks1[j, y_mins[j]:y_maxs[j], x_mins[j]:x_maxs[j]] = 1
+            # neg_masks1 = neg_masks1 ^ pos_masks
+            neg_masks1 = (gt_masks != i+1)# & (gt_masks != 0)
+
+            # neg_masks2 = torch.ones_like(gt_masks, dtype=torch.bool)
+            # for j in range(masks.size(0)):
+            #     neg_masks2[j, y_mins[j]:y_maxs[j], x_mins[j]:x_maxs[j]] = 0
 
             pos_preds = masks[:,i,...][pos_masks]
             pos_gts = torch.ones_like(pos_preds)
-            neg_preds = masks[:,i,...][neg_masks]
-            neg_gts = torch.zeros_like(neg_preds)
+            neg_preds1 = masks[:,i,...][neg_masks1]
+            neg_gts1 = torch.zeros_like(neg_preds1)
+            # neg_preds2 = masks[:,i,...][neg_masks2]
+            # neg_gts2 = torch.zeros_like(neg_preds2)
             
             pos_loss = self.criterion(pos_preds, pos_gts)
-            neg_loss = self.criterion(neg_preds, neg_gts)
+            neg_loss1 = self.criterion(neg_preds1, neg_gts1)
+            # neg_loss2 = self.criterion(neg_preds2, neg_gts2)
 
-            loss += 0.1 * pos_loss + 0.9 * neg_loss
+            loss += self.alpha * pos_loss + neg_loss1 # + neg_loss2
 
         return loss
     
@@ -312,12 +323,94 @@ class FlowGuidedSegLoss(nn.Module):
 
         flows_centered = flows - torch.mean(flows, dim=(2, 3), keepdim=True)
         flows_centered_norm = flows_centered.norm(dim=1, keepdim=True)
-        masks_flow = flows_centered_norm > 0.1 * max_norm.max().item()
+        flows_centered_norm_max = flows_centered_norm.flatten(2).max(dim=2)[0].unsqueeze(1).unsqueeze(1)
+        masks_flow = flows_centered_norm > 0.2 * flows_centered_norm_max
 
         loss_sup = self.criterion_sup(masks, masks_flow.float().squeeze(1))
         loss_unsup = self.criterion_unsup(feats, flows, max_norm)
 
         loss = loss_sup + loss_unsup
+
+        return loss
+    
+class FlowGuidedSegLoss2(nn.Module):
+    def __init__(self):
+        super(FlowGuidedSegLoss2, self).__init__()
+        self.criterion_sup = nn.BCEWithLogitsLoss()
+        self.criterion_unsup = FlowLoss()
+
+    def forward(self, skls, masks_body, masks_obj, feats, flows, gt_masks):
+        # skls: B J 2
+        # masks_body: B H W
+        # masks_obj: B H W
+        # feats: B C h w
+        # flows: B 2 H W
+        # gt_masks: B H W
+
+        h, w = masks_body.size(1), masks_body.size(2)
+
+        pos_masks_body = (gt_masks > 0)
+
+        y_mins = torch.min(skls[:, :, 1], dim=1)[0].type(torch.int)
+        y_maxs = torch.max(skls[:, :, 1], dim=1)[0].type(torch.int)
+        x_mins = torch.min(skls[:, :, 0], dim=1)[0].type(torch.int)
+        x_maxs = torch.max(skls[:, :, 0], dim=1)[0].type(torch.int)
+
+        y_mins = torch.clamp(y_mins - 10, min=0)
+        y_maxs = torch.clamp(y_maxs + 10, max=h)
+        x_mins = torch.clamp(x_mins - 10, min=0)
+        x_maxs = torch.clamp(x_maxs + 10, max=w)
+
+        neg_masks_body = torch.ones_like(gt_masks, dtype=torch.bool)
+        for i in range(masks_body.size(0)):
+            neg_masks_body[i, y_mins[i]:y_maxs[i], x_mins[i]:x_maxs[i]] = 0
+
+        flows_norm = flows.norm(dim=1, keepdim=True)
+        max_norm = flows_norm.flatten(2).max(dim=2)[0].unsqueeze(1).unsqueeze(1)
+
+        flows_mean = torch.mean(flows, dim=(2, 3), keepdim=True)
+        flows_centered = flows - flows_mean
+        flows_centered_norm = flows_centered.norm(dim=1, keepdim=True)
+        flows_centered_norm_max = flows_centered_norm.flatten(2).max(dim=2)[0].unsqueeze(1).unsqueeze(1)
+        masks_flow = flows_centered_norm > 0.3 * flows_centered_norm_max
+        masks_flow = masks_flow.float().squeeze(1)
+
+        # plt.imsave('masks_flow.png', masks_flow[0].cpu().numpy())
+
+        # pos_masks_body = pos_masks_body | (masks_flow.bool() & ~neg_masks_body)
+
+        # plt.imsave('masks_flow_body.png', masks_flow_body[0].cpu().numpy())
+        # plt.imsave('pos_masks_body.png', pos_masks_body[0].cpu().numpy())
+        # plt.imsave('pos_masks_union.png', torch.logical_or(pos_masks_body, masks_flow_body.bool())[0].cpu().numpy())
+        # plt.imsave('neg_masks_body.png', neg_masks_body[0].cpu().numpy())
+
+        pos_preds_body = masks_body[pos_masks_body]
+        pos_gts_body = torch.ones_like(pos_preds_body)
+        neg_preds_body = masks_body[neg_masks_body]
+        neg_gts_body = torch.zeros_like(neg_preds_body)
+        pos_body_loss = self.criterion_sup(pos_preds_body, pos_gts_body)
+        neg_body_loss = self.criterion_sup(neg_preds_body, neg_gts_body)
+        # loss_sup_body = self.criterion_sup(masks_body, masks_flow_body)
+        # flow_body = flows * ~neg_masks_body.unsqueeze(1) + flows_mean * neg_masks_body.unsqueeze(1)
+        loss_unsup_body = self.criterion_unsup(feats, flows, max_norm)
+
+
+        masks_flow_obj = masks_flow.bool() & neg_masks_body
+
+        # plt.imsave('masks_flow_obj.png', masks_flow_obj[0].cpu().numpy())
+
+        # pos_preds_obj = masks_obj[masks_flow_obj.bool()]
+        # pos_gts_obj = torch.ones_like(pos_preds_obj)
+        # neg_preds_obj = masks_obj[~(masks_flow_obj.bool())]
+        # neg_gts_obj = torch.zeros_like(neg_preds_obj)
+        # pos_obj_loss = self.criterion_sup(pos_preds_obj, pos_gts_obj)
+        # neg_obj_loss = self.criterion_sup(neg_preds_obj, neg_gts_obj)
+
+        loss_sup_obj = self.criterion_sup(masks_obj, masks_flow_obj.float())
+        flow_obj = flows * neg_masks_body.unsqueeze(1) + flows_mean * ~neg_masks_body.unsqueeze(1)
+        loss_unsup_obj = self.criterion_unsup(feats, flow_obj, max_norm)
+
+        loss = pos_body_loss + neg_body_loss + loss_unsup_body + loss_sup_obj + loss_unsup_obj
 
         return loss
     

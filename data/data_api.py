@@ -19,8 +19,12 @@ def collate_fn(batch):
     skls = torch.stack(transposed_batch[1], dim=0)
     flow = torch.stack(transposed_batch[2], dim=0)
     masks = torch.stack(transposed_batch[3], dim=0)
-    # dmaps = torch.stack(transposed_batch[4], dim=0)
-    return frms, skls, flow, masks #, dmaps
+    return {
+        'frms': frms,
+        'skls': skls,
+        'skl_flow': flow,
+        'masks': masks
+    }
 
 class LitDataModule(pl.LightningDataModule):
 

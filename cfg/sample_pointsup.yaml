@@ -15,7 +15,7 @@ n_inter: 2
 # Optimizer parameters
 # --------------------------------------
 optim_name: adamw
-lr: 0.00001
+lr: 0.0001
 weight_decay: 0.001
 momentum: 0.9
 # --------------------------------------
@@ -41,6 +41,22 @@ global_flow: True
 dataset: sintel
 small: False
 # --------------------------------------
+# Point Head parameters
+# --------------------------------------
+POINT_HEAD_NUM_FC: 3
+POINT_HEAD_FC_DIM: 256
+POINT_HEAD_TRAIN_NUM_POINTS: 128
+POINT_HEAD_SUBDIVISION_STEPS: 3
+POINT_HEAD_SUBDIVISION_NUM_POINTS: 784
+IMPLICIT_POINTREND_IMAGE_FEATURE_ENABLED: True
+IMPLICIT_POINTREND_POS_ENC_ENABLED: True
+ROI_MASK_HEAD_OUTPUT_SIDE_RESOLUTION: 14
+ROI_MASK_HEAD_FC_DIM: 512
+ROI_MASK_HEAD_NUM_FC: 2
+ROI_MASK_HEAD_CONV_DIM: 256
+ROI_MASK_HEAD_IN_FEATURES: 512
+ROI_MASK_HEAD_POOLER_RESOLUTION: 14
+# --------------------------------------
 # Model Head parameters
 # --------------------------------------
 corr_levels: 4
@@ -54,7 +70,7 @@ gamma: 0.8
 thres_con: 0.9
 n_iters: 12
 w_body: 1.0
-w_joint: 0.1
+w_joint: 1.0
 w_flow: 1.0
 w_consist: 10.0
 w_weak: 0.01
