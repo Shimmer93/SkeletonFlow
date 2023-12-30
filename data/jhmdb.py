@@ -77,7 +77,7 @@ class SubJHMDBDataset(Dataset):
         masks_joint = torch.cat([mask_joint0, mask_joint1], dim=0)
         masks = torch.cat([masks_body, masks_joint], dim=0)
 
-        return frms, skls, flow, masks
+        return frms, skls, flow, masks, frm0_fn
     
     def __len__(self):
         return len(self.frm_data)

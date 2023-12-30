@@ -22,6 +22,7 @@ from model.head import BodyMaskHead, FlowMaskHead, ImplicitPointRendMaskHead, Jo
 # from model.flow.gaflow import GAFlow
 from loss.loss import BodySegLoss2, FlowGuidedSegLoss, JointSegLoss2, JointConsistLoss, WeakSupFlowLoss, BodySegLoss, JointSegLoss
 from misc.vis import denormalize, flow_to_image, mask_to_image, mask_to_joint_images
+from misc.utils import write_psm
 
 def normalize_imagenet(img):
     return TF.normalize(img, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
@@ -109,20 +110,6 @@ class LitModel(pl.LightningModule):
         # gt_masks: B 2+2J H W
         # gt_dmaps: B 2 J H W
 
-        # gt_masks_body = input['masks'][:,:2,...]
-        # gt_masks_joint = input['masks'][:,2:,...]
-
-        # skls0 = input['skls'][:,0]
-        # skls_ = input['skls'].flatten(0, 1)
-        # pred_masks_joint0 = output['masks_joint'][:,0]
-        # pred_masks_joint1 = output['masks_joint'][:,1]
-        # pred_masks_joint_ = output['masks_joint'].flatten(0, 1)
-
-        # l_body = self.body_seg_loss(skls0, output['mask_body'], gt_masks_body[:,0])
-        # l_consist = self.joint_consist_loss(pred_masks_joint0, pred_masks_joint1, output['flow'])
-
-        # l_total = self.hparams.w_flow * l_flow # + self.hparams.w_consist * l_consist # + self.hparams.w_weak * l_weak
-
         if mode == 'train':
             l_body = self.body_seg_loss(output['point_logits_body'], output['point_labels_body'])
             l_joint = self.joint_seg_loss(output['point_logits_joint'], output['point_labels_joint'])
@@ -208,6 +195,16 @@ class LitModel(pl.LightningModule):
                 self.logger.log_image(key='mask_flow', images=[mask_flow])
                 self.logger.log_image(key='flow', images=[flow])
 
+    def _save_psm(self, input, output):
+        B = input['frms'].shape[0]
+        for i in range(B):
+            frm0_fn = input['frm0_fn'][i]
+            psm_fn = frm0_fn.replace('Rename_Images', 'PSM_v1')#.replace('.png', '.jpg')#.replace('.jpg', '.psm')
+            os.makedirs(os.path.dirname(psm_fn), exist_ok=True)
+            mask_joints = F.sigmoid(output['masks_joint'][i]) * (F.sigmoid(output['mask_body'][i]).unsqueeze(0) > 0.5).float()
+            mask_body = F.sigmoid(output['mask_body'][i])
+            write_psm(psm_fn, mask_joints, body_mask=mask_body, rescale_ratio=4.0)
+
     def forward(self, x):
         frm0, frm1 = x['frms'][:,0,...], x['frms'][:,1,...]
         skl_ = x['skls'].flatten(0, 1)
@@ -265,6 +262,7 @@ class LitModel(pl.LightningModule):
         output = self.forward(batch)
         loss = self._calculate_loss(input, output, 'test')
         self._vis_flow(input, output, batch_idx, log=False, store=True)
+        # self._save_psm(input, output)
         return loss
     
     def configure_optimizers(self):

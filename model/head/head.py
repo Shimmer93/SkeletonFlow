@@ -115,14 +115,14 @@ class ImplicitPointHead(nn.Module):
                 mlp_layers.append(nn.Linear(self.in_channels, self.channels))
                 # mlp_layers.append(nn.BatchNorm1d(self.channels))
                 mlp_layers.append(nn.ReLU())
-                # mlp_layers.append(nn.Dropout(0.1))
+                mlp_layers.append(nn.Dropout(0.1))
             elif l == self.num_layers - 1:
                 mlp_layers.append(nn.Linear(self.channels, self.num_classes))
             else:
                 mlp_layers.append(nn.Linear(self.channels, self.channels))
                 # mlp_layers.append(nn.BatchNorm1d(self.channels))
                 mlp_layers.append(nn.ReLU())
-                # mlp_layers.append(nn.Dropout(0.1))
+                mlp_layers.append(nn.Dropout(0.1))
         self.mlp = nn.Sequential(*mlp_layers)
 
     def forward(self, fine_grained_features, point_coords):
@@ -160,9 +160,12 @@ class ImplicitPointHead(nn.Module):
         # )
 
         # point_logits = self._dynamic_mlp(mask_feat, weights, biases, num_instances)
-        # B, C, L = mask_feat.shape
-        point_logits = self.mlp(mask_feat.transpose(1, 2)).transpose(1, 2)
-        point_logits = point_logits.reshape(-1, self.num_classes, num_points)
+        B, C, L = mask_feat.shape
+        mask_feat = mask_feat.transpose(1, 2).reshape(B*L, C)
+        point_logits = self.mlp(mask_feat)
+        point_logits = point_logits.reshape(B, L, self.num_classes).transpose(1, 2)
+        # point_logits = self.mlp(mask_feat.transpose(1, 2)).transpose(1, 2)
+        # point_logits = point_logits.reshape(-1, self.num_classes, num_points)
 
         return point_logits
 

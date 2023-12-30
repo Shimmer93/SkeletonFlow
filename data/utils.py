@@ -88,7 +88,7 @@ def skeleton_to_joint_mask(skl, height, width):
     for i, pt in enumerate(skl):
         canvas = torch.zeros((height, width))
         canvas[int(pt[1]), int(pt[0])] = 1
-        canvas = TF.gaussian_blur(canvas.unsqueeze(0), kernel_size=5).squeeze(0)
+        canvas = TF.gaussian_blur(canvas.unsqueeze(0), kernel_size=3).squeeze(0)
         canvas = (canvas > 0).float()
         mask[i] = canvas
     return mask

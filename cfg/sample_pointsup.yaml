@@ -15,7 +15,7 @@ n_inter: 2
 # Optimizer parameters
 # --------------------------------------
 optim_name: adamw
-lr: 0.0001
+lr: 0.00001
 weight_decay: 0.001
 momentum: 0.9
 # --------------------------------------
@@ -69,7 +69,7 @@ sf_dim: 256
 gamma: 0.8
 thres_con: 0.9
 n_iters: 12
-w_body: 1.0
+w_body: 10.0
 w_joint: 1.0
 w_flow: 1.0
 w_consist: 10.0
