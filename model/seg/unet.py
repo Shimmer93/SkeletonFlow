@@ -184,3 +184,33 @@ class UNet(nn.Module):
         # x = torch.cat([x_flow, x_body_joint], dim=1)
         # x = upsample(x, ratio=4)
         return f_body, f_joint
+    
+class UNetFlow(nn.Module):
+    def __init__(self, type='resnet50'):
+        super(UNetFlow, self).__init__()
+        self.encoder = Encoder(type=type, pretrained=False)
+        self.decoder = Decoder(self.encoder.enc_dims)
+        self.head_flow = FeatureHead(self.encoder.enc_dims[0], 1)
+
+        self.encoder.enc1[0] = nn.Conv2d(2, 64, kernel_size=7, stride=2, padding=3, bias=False)
+
+        self._init_params()
+
+    def _init_params(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight.data, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias.data)
+
+    def forward(self, x):
+        x_mean = torch.mean(x, dim=(2, 3), keepdim=True)
+        x_std = torch.std(x, dim=(2, 3), keepdim=True)
+        x = (x - x_mean) / x_std
+        x1, x2, x3 = self.encoder(x)
+        x = self.decoder(x1, x2, x3)
+        f = self.head_flow(x)
+
+        # print(f'max: {torch.max(f).item()}, min: {torch.min(f).item()}')
+        # x = upsample(x, ratio=4)
+        return f

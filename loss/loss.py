@@ -46,6 +46,37 @@ class BodySegLoss(nn.Module):
 
         return loss
     
+class FlowSegLoss(nn.Module):
+    def __init__(self, w_neg=1):
+        super(FlowSegLoss, self).__init__()
+        self.criterion = nn.BCEWithLogitsLoss()
+        self.w_neg = w_neg
+
+    def forward(self, masks, flows):
+        B, H, W = masks.size()
+
+        flows_mean = torch.mean(flows, dim=(2, 3), keepdim=True)
+        flows_centered = flows - flows_mean
+        flows_centered_norm = torch.norm(flows_centered, dim=1, keepdim=True)
+        flows_centered_norm_max = flows_centered_norm.flatten(2).max(dim=2)[0].unsqueeze(1).unsqueeze(1)
+        
+        pos_masks = (flows_centered_norm > flows_centered_norm_max * 0.8).squeeze(1)
+        neg_masks = (flows_centered_norm < flows_centered_norm_max * 0.2).squeeze(1)
+
+        # print(pos_masks.shape, neg_masks.shape, masks.shape)
+
+        pos_preds = masks[pos_masks]
+        pos_gt = torch.ones_like(pos_preds)
+        neg_preds = masks[neg_masks]
+        neg_gt = torch.zeros_like(neg_preds)
+
+        pos_loss = self.criterion(pos_preds, pos_gt)
+        neg_loss = self.criterion(neg_preds, neg_gt)
+
+        loss = pos_loss + self.w_neg * neg_loss
+
+        return loss
+    
 class BodySegLoss2(nn.Module):
     def __init__(self):
         super(BodySegLoss2, self).__init__()

@@ -136,6 +136,22 @@ class BasicUpdateBlock(nn.Module):
         mask = .25 * self.mask(net)
         return net, mask, delta_flow
     
+class FlowDecoder(nn.Module):
+    def __init__(self, args, hidden_dim=256):
+        super(FlowDecoder, self).__init__()
+        self.encoder = BasicMotionEncoder(args)
+        self.conv1 = nn.Conv2d(128+128, hidden_dim, 3, padding=1)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(hidden_dim, hidden_dim, 3, padding=1)
+        
+    def forward(self, net, corr, flow):
+        motion_features = self.encoder(flow, corr) # 128
+        f = torch.cat([net, motion_features], dim=1) # 128 + 128
+        f = self.relu(self.conv1(f))
+        f = self.conv2(f)
+        f = F.interpolate(f, scale_factor=2, mode='bilinear', align_corners=False)
+        return f
+
 class FlowMaskHead(nn.Module):
     def __init__(self, args, hidden_dim=128, up_ratio=8):
         super(FlowMaskHead, self).__init__()

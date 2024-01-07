@@ -4,7 +4,7 @@ pretrained: False
 sync_batchnorm: False
 clip_grad: null
 precision: 16
-epochs: 100
+epochs: 200
 # --------------------------------------
 # Dataset parameters
 # --------------------------------------

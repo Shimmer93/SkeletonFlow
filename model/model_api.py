@@ -13,14 +13,14 @@ from collections import OrderedDict
 import matplotlib.pyplot as plt
 
 from model.seg.deeplabv3 import DeepLabV3
-from model.seg.unet import UNet
+from model.seg.unet import UNet, UNetFlow
 from model.seg.segmenter import create_segmenter_without_cfg
 
 from model.flow.raft import RAFT
 
-from model.head import BodyMaskHead, FlowMaskHead, ImplicitPointRendMaskHead, JointMaskHead
+from model.head import BodyMaskHead, ImplicitPointRendMaskHead, JointMaskHead, FlowMaskHead, FlowDecoder
 # from model.flow.gaflow import GAFlow
-from loss.loss import BodySegLoss2, FlowGuidedSegLoss, JointSegLoss2, JointConsistLoss, WeakSupFlowLoss, BodySegLoss, JointSegLoss
+from loss.loss import BodySegLoss2, FlowGuidedSegLoss, JointSegLoss2, JointConsistLoss, WeakSupFlowLoss, BodySegLoss, JointSegLoss, FlowSegLoss
 from misc.vis import denormalize, flow_to_image, mask_to_image, mask_to_joint_images
 from misc.utils import write_psm
 
@@ -88,17 +88,20 @@ class LitModel(pl.LightningModule):
         self.save_hyperparameters(hparams)
         self.model_seg = create_model_seg(hparams)
         self.model_flow = create_model_flow(hparams)
+        self.model_seg_flow = UNetFlow(type=hparams.seg_type)
+        # self.dec_flow = FlowDecoder(hparams)
         self.head_joint = JointMaskHead(hparams, input_shape=[256, 14, 14], num_classes=hparams.num_joints)
         self.head_body = ImplicitPointRendMaskHead(hparams, input_shape=[256, 14, 14]) #BodyMaskHead(hparams, hidden_dim=hparams.hidden_dim, sf_dim=hparams.sf_dim)
-        self.head_flow = FlowMaskHead(hparams, hidden_dim=hparams.hidden_dim)
+        self.head_flow = FlowMaskHead(hparams, input_shape=[256, 14, 14])
         
         self.body_seg_loss = BodySegLoss2()
         self.joint_seg_loss = JointSegLoss2()
-        self.flow_guided_seg_loss = FlowGuidedSegLoss()
+        self.flow_guided_seg_loss = BodySegLoss2()
         # self.joint_consist_loss = JointConsistLoss()
 
         self.body_seg_metric = BodySegLoss()
         self.joint_seg_metric = JointSegLoss()
+        self.flow_seg_metric = FlowSegLoss()
 
         os.makedirs(f'{self.hparams.model_ckpt_dir}/vis', exist_ok=True)
     
@@ -113,7 +116,8 @@ class LitModel(pl.LightningModule):
         if mode == 'train':
             l_body = self.body_seg_loss(output['point_logits_body'], output['point_labels_body'])
             l_joint = self.joint_seg_loss(output['point_logits_joint'], output['point_labels_joint'])
-            l_flow = self.flow_guided_seg_loss(output['feat_flow'], input['skls'][:,0], output['flow'], output['mask_flow'], unsup=(self.current_epoch >= 50))
+            l_flow = self.flow_guided_seg_loss(output['point_logits_flow'], output['point_labels_flow'])
+            # l_flow = self.flow_guided_seg_loss(output['feat_flow'], input['skls'][:,0], output['flow'], output['mask_flow'], unsup=(self.current_epoch >= 50))
             l_total = self.hparams.w_body * l_body + self.hparams.w_joint * l_joint + self.hparams.w_flow * l_flow
             self.log(f'{mode}_l_body', l_body, sync_dist=True)
             self.log(f'{mode}_l_joint', l_joint, sync_dist=True)
@@ -128,11 +132,14 @@ class LitModel(pl.LightningModule):
             gt_masks_joint_ = torch.chunk(input['masks'][:,2:,...], 2, dim=1)
             gt_masks_joint_ = torch.stack([gt_masks_joint_[0], gt_masks_joint_[1]], dim=1)
             gt_masks_joint_ = gt_masks_joint_.flatten(0, 1)
+            
             m_body = self.body_seg_metric(skl_, output['mask_body'], gt_mask_body_)
             m_joint = self.joint_seg_metric(skl_, output['masks_joint'], gt_masks_joint_)
-            m_total = self.hparams.w_body * m_body + self.hparams.w_joint * m_joint
+            m_flow = self.flow_seg_metric(output['mask_flow'], output['flow'])
+            m_total = self.hparams.w_body * m_body + self.hparams.w_joint * m_joint + self.hparams.w_flow * m_flow
             self.log(f'{mode}_m_body', m_body, sync_dist=True)
             self.log(f'{mode}_m_joint', m_joint, sync_dist=True)
+            self.log(f'{mode}_m_flow', m_flow, sync_dist=True)
             self.log(f'{mode}_metric', m_total, sync_dist=True)
             return m_total
 
@@ -219,10 +226,14 @@ class LitModel(pl.LightningModule):
         # self.model_flow.eval()
         with torch.no_grad():
             flows, (net, corr, flow) = self.model_flow(frm0, frm1, test_mode=True)
+        # feat_flow = self.dec_flow(net, corr, flow)
+        feat_flow = self.model_seg_flow(flows[-1].clone().detach())
+
+        # print(feat_body_.shape, feat_joint_.shape, feat_flow.shape)
 
         ret_body = self.head_body(feat_body_, skl_, gt_mask_body_)
         ret_joint = self.head_joint(feat_joint_, skl_, gt_masks_joint_)
-        mask_flow, feat_flow = self.head_flow(net, corr, flow)
+        ret_flow = self.head_flow(feat_flow, flows[-1])
 
         if self.training:
             return {
@@ -231,7 +242,8 @@ class LitModel(pl.LightningModule):
                 'point_labels_joint': ret_joint[1],
                 'point_logits_body': ret_body[0].squeeze(1),
                 'point_labels_body': ret_body[1],
-                'mask_flow': mask_flow.squeeze(1),
+                'point_logits_flow': ret_flow[0].squeeze(1),
+                'point_labels_flow': ret_flow[1],
                 'feat_flow': feat_flow
             }
         else:
@@ -239,7 +251,7 @@ class LitModel(pl.LightningModule):
                 'flow': flows[-1].detach(),
                 'masks_joint': ret_joint,
                 'mask_body': ret_body.squeeze(1),
-                'mask_flow': mask_flow.squeeze(1),
+                'mask_flow': ret_flow.squeeze(1),
                 'feat_flow': feat_flow
             }
     
@@ -266,6 +278,6 @@ class LitModel(pl.LightningModule):
         return loss
     
     def configure_optimizers(self):
-        optimizer = create_optimizer(self.hparams, list(self.model_seg.parameters())+list(self.head_body.parameters())+list(self.head_joint.parameters())+list(self.head_flow.parameters()))
+        optimizer = create_optimizer(self.hparams, list(self.model_seg.parameters())+list(self.head_body.parameters())+list(self.head_joint.parameters())+list(self.head_flow.parameters())+list(self.model_seg_flow.parameters()))
         scheduler = create_scheduler(self.hparams, optimizer)
         return [optimizer], [scheduler]

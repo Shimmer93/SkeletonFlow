@@ -566,9 +566,9 @@ class ImplicitPointRendMaskHead(PointRendMaskHead):
             if torch.sum(neg_mask) == 0:
                 neg_mask[0, 0] = True
             neg_idxs = torch.nonzero(neg_mask).flip(1)
-            neg_idxs = neg_idxs[torch.randperm(len(neg_idxs)),:][:num_samples]
             while len(neg_idxs) < num_samples:
                 neg_idxs = torch.cat([neg_idxs, neg_idxs], dim=0)
+            neg_idxs = neg_idxs[torch.randperm(len(neg_idxs)),:][:num_samples]
             pos_mask = (gt_masks[i] > 0)
             pos_idxs = torch.nonzero(pos_mask).flip(1)
             while len(pos_idxs) < num_samples:
@@ -654,6 +654,71 @@ class JointMaskHead(ImplicitPointRendMaskHead):
 
             point_coords.append(torch.cat(coords_i, dim=0))
             point_labels.append(torch.cat(labels_i, dim=0))
+
+        point_coords = torch.stack(point_coords, dim=0).to(features.device)
+        point_coords = point_coords / torch.tensor([w-1, h-1], dtype=torch.float, device=features.device).unsqueeze(0)
+        point_labels = torch.stack(point_labels, dim=0).to(features.device)
+
+        # print(point_coords.shape)
+        return point_coords, point_labels
+    
+class FlowMaskHead(ImplicitPointRendMaskHead):
+    def __init__(self, cfg, input_shape, num_classes=1):
+        super().__init__(cfg, input_shape, num_classes)
+
+    def forward(self, features, flows=None):
+        """
+        Args:
+            features: B C H W
+        """
+        if self.training:
+            # parameters = self.parameter_head(self._roi_pooler(features))
+
+            point_coords, point_labels = self._sample_train_points_with_flow(features, flows)
+            point_fine_grained_features = self._point_pooler(features, point_coords)
+            point_logits = self._get_point_logits(
+                point_fine_grained_features, point_coords
+            )
+
+            return point_logits, point_labels
+        else:
+            # parameters = self.parameter_head(self._roi_pooler(features))
+            return self._subdivision_inference(features)
+
+    def _sample_train_points_with_flow(self, features, flows):
+        assert self.training
+
+        hf = features.shape[-2]
+        wf = features.shape[-1]
+
+        h = int(hf // self.scale)
+        w = int(wf // self.scale)
+
+        flows_mean = torch.mean(flows, dim=(2, 3), keepdim=True)
+        flows_centered = flows - flows_mean
+        flows_centered_norm = torch.norm(flows_centered, dim=1, keepdim=True)
+        flows_centered_norm_max = flows_centered_norm.flatten(2).max(dim=2)[0].unsqueeze(1).unsqueeze(1)
+        
+        pos_masks = (flows_centered_norm > flows_centered_norm_max * 0.8).squeeze(1)
+        neg_masks = (flows_centered_norm < flows_centered_norm_max * 0.2).squeeze(1)
+
+        point_coords = []
+        point_labels = []
+
+        for(i, (pos_mask, neg_mask)) in enumerate(zip(pos_masks, neg_masks)):
+            num_samples = self.mask_point_train_num_points // 2
+            neg_idxs = torch.nonzero(neg_mask).flip(1)
+            while len(neg_idxs) < num_samples:
+                neg_idxs = torch.cat([neg_idxs, neg_idxs], dim=0)
+            neg_idxs = neg_idxs[torch.randperm(len(neg_idxs)),:][:num_samples]
+            pos_idxs = torch.nonzero(pos_mask).flip(1)
+            while len(pos_idxs) < num_samples:
+                pos_idxs = torch.cat([pos_idxs, pos_idxs], dim=0)
+            pos_idxs = pos_idxs[torch.randperm(len(pos_idxs)),:][:num_samples]
+            point_coords.append(torch.cat([neg_idxs, pos_idxs], dim=0))
+            point_labels.append(torch.cat([torch.zeros(num_samples), torch.ones(num_samples)], dim=0))
+
+            # print(f'neg_idxs: {len(neg_idxs)}, pos_idxs: {len(pos_idxs)}')
 
         point_coords = torch.stack(point_coords, dim=0).to(features.device)
         point_coords = point_coords / torch.tensor([w-1, h-1], dtype=torch.float, device=features.device).unsqueeze(0)
