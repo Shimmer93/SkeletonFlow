@@ -1,5 +1,5 @@
-from typing import Any
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 import torch.optim as optim
@@ -14,13 +14,12 @@ import matplotlib.pyplot as plt
 
 from model.seg.deeplabv3 import DeepLabV3
 from model.seg.unet import UNet, UNetFlow
-from model.seg.segmenter import create_segmenter_without_cfg
 
 from model.flow.raft import RAFT
 
-from model.head import BodyMaskHead, ImplicitPointRendMaskHead, JointMaskHead, FlowMaskHead, FlowDecoder
+from model.head import BodyMaskHead, JointMaskHead, FlowMaskHead
 # from model.flow.gaflow import GAFlow
-from loss.loss import BodySegLoss2, FlowGuidedSegLoss, JointSegLoss2, JointConsistLoss, WeakSupFlowLoss, BodySegLoss, JointSegLoss, FlowSegLoss
+from loss.loss import JointSegTrainLoss, JointConsistLoss, BodySegValLoss, JointSegValLoss, FlowSegValLoss
 from misc.vis import denormalize, flow_to_image, mask_to_image, mask_to_joint_images
 from misc.utils import write_psm
 
@@ -31,12 +30,8 @@ def create_model_seg(hparams):
     if hparams.seg_model_name == 'deeplabv3':
         return DeepLabV3(type=hparams.seg_type, pretrained=hparams.seg_pretrained, num_joints=hparams.num_joints)
     elif hparams.seg_model_name == 'unet':
-        return UNet(type=hparams.seg_type, pretrained=hparams.seg_pretrained, num_joints=hparams.num_joints)
-    elif hparams.seg_model_name == 'segmenter':
-        return create_segmenter_without_cfg(image_size=hparams.input_size, patch_size=hparams.patch_size, n_layers_encoder=hparams.n_layers_encoder,
-                                            n_layers_decoder=hparams.n_layers_decoder, d_model=hparams.d_model, n_heads=hparams.n_heads,
-                                            n_cls=hparams.seg_out_channels, dropout=hparams.dropout, drop_path_rate=hparams.drop_path_rate,
-                                            variant=hparams.variant)
+        return UNet(type=hparams.seg_type, pretrained=hparams.seg_pretrained, num_joints=hparams.num_joints), \
+                UNetFlow(type=hparams.seg_type)
     else:
         raise NotImplementedError
     
@@ -86,22 +81,21 @@ class LitModel(pl.LightningModule):
     def __init__(self, hparams):
         super().__init__()
         self.save_hyperparameters(hparams)
-        self.model_seg = create_model_seg(hparams)
+        self.model_seg, self.model_seg_flow = create_model_seg(hparams)
         self.model_flow = create_model_flow(hparams)
-        self.model_seg_flow = UNetFlow(type=hparams.seg_type)
-        # self.dec_flow = FlowDecoder(hparams)
+
         self.head_joint = JointMaskHead(hparams, input_shape=[256, 14, 14], num_classes=hparams.num_joints)
-        self.head_body = ImplicitPointRendMaskHead(hparams, input_shape=[256, 14, 14]) #BodyMaskHead(hparams, hidden_dim=hparams.hidden_dim, sf_dim=hparams.sf_dim)
+        self.head_body = BodyMaskHead(hparams, input_shape=[256, 14, 14])
         self.head_flow = FlowMaskHead(hparams, input_shape=[256, 14, 14])
         
-        self.body_seg_loss = BodySegLoss2()
-        self.joint_seg_loss = JointSegLoss2()
-        self.flow_guided_seg_loss = BodySegLoss2()
+        self.body_seg_loss = nn.BCEWithLogitsLoss()
+        self.joint_seg_loss = JointSegTrainLoss()
+        self.flow_guided_seg_loss = nn.BCEWithLogitsLoss()
         # self.joint_consist_loss = JointConsistLoss()
 
-        self.body_seg_metric = BodySegLoss()
-        self.joint_seg_metric = JointSegLoss()
-        self.flow_seg_metric = FlowSegLoss()
+        self.body_seg_metric = BodySegValLoss()
+        self.joint_seg_metric = JointSegValLoss()
+        self.flow_seg_metric = FlowSegValLoss()
 
         os.makedirs(f'{self.hparams.model_ckpt_dir}/vis', exist_ok=True)
     
@@ -117,7 +111,6 @@ class LitModel(pl.LightningModule):
             l_body = self.body_seg_loss(output['point_logits_body'], output['point_labels_body'])
             l_joint = self.joint_seg_loss(output['point_logits_joint'], output['point_labels_joint'])
             l_flow = self.flow_guided_seg_loss(output['point_logits_flow'], output['point_labels_flow'])
-            # l_flow = self.flow_guided_seg_loss(output['feat_flow'], input['skls'][:,0], output['flow'], output['mask_flow'], unsup=(self.current_epoch >= 50))
             l_total = self.hparams.w_body * l_body + self.hparams.w_joint * l_joint + self.hparams.w_flow * l_flow
             self.log(f'{mode}_l_body', l_body, sync_dist=True)
             self.log(f'{mode}_l_joint', l_joint, sync_dist=True)
@@ -155,16 +148,12 @@ class LitModel(pl.LightningModule):
         masks_body = output['mask_body']
         masks_flow = output['mask_flow']
 
-        # print(masks_joints.shape, masks_body.shape, masks_flow.shape)
-
         num_kps = self.hparams.num_joints
         masks_body = (F.sigmoid(masks_body) > 0.5).float()
         masks_joints = (F.sigmoid(masks_joints) > 0.5).float()
         masks_joints_neg = (torch.max(masks_joints, dim=1, keepdim=True)[0] < 0.5).float()
         masks_joint = torch.argmax(torch.cat([masks_joints_neg, masks_joints], dim=1), dim=1) # * masks_body
         masks_flow = (F.sigmoid(masks_flow) > 0.5).float()
-
-        # print(masks_joints.shape, masks_body.shape, masks_flow.shape, masks_joint.shape)
 
         for i, (frm, flow, mask_body, mask_joint, mask_flow, mask_joints) in enumerate(zip(frms, flows, masks_body, masks_joint, masks_flow, masks_joints)):
             frm0 = frm[0].detach().cpu().numpy().transpose(1, 2, 0)
@@ -223,13 +212,9 @@ class LitModel(pl.LightningModule):
         frm_ = x['frms'].flatten(0, 1)
         frm_norm_ = normalize_imagenet(frm_)
         feat_body_, feat_joint_ = self.model_seg(frm_norm_)
-        # self.model_flow.eval()
         with torch.no_grad():
-            flows, (net, corr, flow) = self.model_flow(frm0, frm1, test_mode=True)
-        # feat_flow = self.dec_flow(net, corr, flow)
+            flows = self.model_flow(frm0, frm1, test_mode=True)
         feat_flow = self.model_seg_flow(flows[-1].clone().detach())
-
-        # print(feat_body_.shape, feat_joint_.shape, feat_flow.shape)
 
         ret_body = self.head_body(feat_body_, skl_, gt_mask_body_)
         ret_joint = self.head_joint(feat_joint_, skl_, gt_masks_joint_)
@@ -243,16 +228,14 @@ class LitModel(pl.LightningModule):
                 'point_logits_body': ret_body[0].squeeze(1),
                 'point_labels_body': ret_body[1],
                 'point_logits_flow': ret_flow[0].squeeze(1),
-                'point_labels_flow': ret_flow[1],
-                'feat_flow': feat_flow
+                'point_labels_flow': ret_flow[1]
             }
         else:
             return {
                 'flow': flows[-1].detach(),
                 'masks_joint': ret_joint,
                 'mask_body': ret_body.squeeze(1),
-                'mask_flow': ret_flow.squeeze(1),
-                'feat_flow': feat_flow
+                'mask_flow': ret_flow.squeeze(1)
             }
     
     def training_step(self, batch, batch_idx):

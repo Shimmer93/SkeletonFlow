@@ -9,8 +9,7 @@ import math
 import sys
 sys.path.append('/home/zpengac/pose/SkeletonFlow')
 from model.head.point import *
-
-import matplotlib.pyplot as plt
+from misc.skeleton import get_min_max_from_skeletons
 
 class Conv2d(nn.Conv2d):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1,
@@ -45,13 +44,6 @@ def calculate_uncertainty(logits):
         gt_class_logits = torch.topk(logits, k=2, dim=1)[0]
         gt_class_logits = gt_class_logits[:, 0:1, ...] - gt_class_logits[:, 1:2, ...]
     return -(torch.abs(gt_class_logits))
-    # if logits.shape[1] == 1:
-    #     gt_class_logits = logits.clone()
-    # else:
-    #     gt_class_logits = logits[
-    #         torch.arange(logits.shape[0], device=logits.device), 1
-    #     ].unsqueeze(1)
-    # return -(torch.abs(gt_class_logits))
 
 class ImplicitPointHead(nn.Module):
     """
@@ -85,42 +77,16 @@ class ImplicitPointHead(nn.Module):
 
         assert self.in_channels > 0
 
-        # num_weight_params, num_bias_params = [], []
-        # assert self.num_layers >= 2
-        # for l in range(self.num_layers):
-        #     if l == 0:
-        #         # input layer
-        #         num_weight_params.append(self.in_channels * self.channels)
-        #         # print(f'self.in_channels: {self.in_channels}, self.channels: {self.channels}, product: {self.in_channels * self.channels}')
-        #         num_bias_params.append(self.channels)
-        #     elif l == self.num_layers - 1:
-        #         # output layer
-        #         num_weight_params.append(self.channels * self.num_classes)
-        #         # print(f'self.channels: {self.channels}, self.num_classes: {self.num_classes}, product: {self.channels * self.num_classes}')
-        #         num_bias_params.append(self.num_classes)
-        #     else:
-        #         # intermediate layer
-        #         num_weight_params.append(self.channels * self.channels)
-        #         # print(f'self.channels: {self.channels}, self.channels: {self.channels}, product: {self.channels * self.channels}')
-        #         num_bias_params.append(self.channels)
-
-        # self.num_weight_params = num_weight_params
-        # self.num_bias_params = num_bias_params
-        # self.num_params = sum(num_weight_params) + sum(num_bias_params)
-
-        # self.params = nn.Parameter(torch.randn((1, self.num_params), requires_grad=True))
         mlp_layers = []
         for l in range(self.num_layers):
             if l == 0:
                 mlp_layers.append(nn.Linear(self.in_channels, self.channels))
-                # mlp_layers.append(nn.BatchNorm1d(self.channels))
                 mlp_layers.append(nn.ReLU())
                 mlp_layers.append(nn.Dropout(0.1))
             elif l == self.num_layers - 1:
                 mlp_layers.append(nn.Linear(self.channels, self.num_classes))
             else:
                 mlp_layers.append(nn.Linear(self.channels, self.channels))
-                # mlp_layers.append(nn.BatchNorm1d(self.channels))
                 mlp_layers.append(nn.ReLU())
                 mlp_layers.append(nn.Dropout(0.1))
         self.mlp = nn.Sequential(*mlp_layers)
@@ -150,168 +116,12 @@ class ImplicitPointHead(nn.Module):
         # features [R, C, K]
         mask_feat = fine_grained_features.reshape(num_instances, self.in_channels, num_points)
 
-        # weights, biases = self._parse_params(
-        #     self.params.repeat(num_instances, 1),
-        #     self.in_channels,
-        #     self.channels,
-        #     self.num_classes,
-        #     self.num_weight_params,
-        #     self.num_bias_params,
-        # )
-
-        # point_logits = self._dynamic_mlp(mask_feat, weights, biases, num_instances)
         B, C, L = mask_feat.shape
         mask_feat = mask_feat.transpose(1, 2).reshape(B*L, C)
         point_logits = self.mlp(mask_feat)
         point_logits = point_logits.reshape(B, L, self.num_classes).transpose(1, 2)
-        # point_logits = self.mlp(mask_feat.transpose(1, 2)).transpose(1, 2)
-        # point_logits = point_logits.reshape(-1, self.num_classes, num_points)
 
         return point_logits
-
-    @staticmethod
-    def _dynamic_mlp(features, weights, biases, num_instances):
-        assert features.dim() == 3, features.dim()
-        n_layers = len(weights)
-        x = features
-        for i, (w, b) in enumerate(zip(weights, biases)):
-            x = torch.einsum("nck,ndc->ndk", x, w) + b
-            if i < n_layers - 1:
-                x = F.relu(x)
-        return x
-
-    @staticmethod
-    def _parse_params(
-        pred_params,
-        in_channels,
-        channels,
-        num_classes,
-        num_weight_params,
-        num_bias_params,
-    ):
-        assert pred_params.dim() == 2
-        assert len(num_weight_params) == len(num_bias_params)
-        assert pred_params.size(1) == sum(num_weight_params) + sum(num_bias_params)
-
-        num_instances = pred_params.size(0)
-        num_layers = len(num_weight_params)
-
-        params_splits = list(
-            torch.split_with_sizes(pred_params, num_weight_params + num_bias_params, dim=1)
-        )
-
-        weight_splits = params_splits[:num_layers]
-        bias_splits = params_splits[num_layers:]
-
-        for l in range(num_layers):
-            if l == 0:
-                # input layer
-                weight_splits[l] = weight_splits[l].reshape(num_instances, channels, in_channels)
-                bias_splits[l] = bias_splits[l].reshape(num_instances, channels, 1)
-            elif l < num_layers - 1:
-                # intermediate layer
-                weight_splits[l] = weight_splits[l].reshape(num_instances, channels, channels)
-                bias_splits[l] = bias_splits[l].reshape(num_instances, channels, 1)
-            else:
-                # output layer
-                weight_splits[l] = weight_splits[l].reshape(num_instances, num_classes, channels)
-                bias_splits[l] = bias_splits[l].reshape(num_instances, num_classes, 1)
-
-        return weight_splits, bias_splits
-    
-class ConvFCHead(nn.Module):
-    """
-    A mask head with fully connected layers. Given pooled features it first reduces channels and
-    spatial dimensions with conv layers and then uses FC layers to predict coarse masks analogously
-    to the standard box head.
-    """
-
-    def __init__(
-        self, input_shape, *, conv_dim, fc_dims, output_shape
-    ):
-        """
-        Args:
-            conv_dim: the output dimension of the conv layers
-            fc_dims: a list of N>0 integers representing the output dimensions of N FC layers
-            output_shape: shape of the output mask prediction
-        """
-        super().__init__()
-
-        # fmt: off
-        input_channels    = input_shape[0]
-        input_h           = input_shape[1]
-        input_w           = input_shape[2]
-        self.output_shape = output_shape
-        # fmt: on
-
-        self.conv_layers = []
-        if input_channels > conv_dim:
-            self.reduce_channel_dim_conv = Conv2d(
-                input_channels,
-                conv_dim,
-                kernel_size=1,
-                stride=1,
-                padding=0,
-                bias=True,
-                activation=F.relu,
-            )
-            self.conv_layers.append(self.reduce_channel_dim_conv)
-
-        self.reduce_spatial_dim_conv = Conv2d(
-            conv_dim, conv_dim, kernel_size=2, stride=2, padding=0, bias=True, activation=F.relu
-        )
-        self.conv_layers.append(self.reduce_spatial_dim_conv)
-
-        input_dim = conv_dim * input_h * input_w
-        input_dim //= 4
-
-        self.fcs = []
-        for k, fc_dim in enumerate(fc_dims):
-            fc = nn.Linear(input_dim, fc_dim)
-            self.add_module("fc{}".format(k + 1), fc)
-            self.fcs.append(fc)
-            input_dim = fc_dim
-
-        output_dim = int(np.prod(self.output_shape))
-
-        self.prediction = nn.Linear(fc_dims[-1], output_dim)
-        # use normal distribution initialization for mask prediction layer
-        nn.init.normal_(self.prediction.weight, std=0.001)
-        nn.init.constant_(self.prediction.bias, 0)
-
-        for layer in self.conv_layers:
-            weight_init.c2_msra_fill(layer)
-        for layer in self.fcs:
-            weight_init.c2_xavier_fill(layer)
-
-    @classmethod
-    def from_config(cls, cfg, input_shape, output_shape=None):
-        if output_shape is None:
-            output_shape = (
-                1,
-                cfg.ROI_MASK_HEAD_OUTPUT_SIDE_RESOLUTION,
-                cfg.ROI_MASK_HEAD_OUTPUT_SIDE_RESOLUTION,
-            )
-        fc_dim = cfg.ROI_MASK_HEAD_FC_DIM
-        num_fc = cfg.ROI_MASK_HEAD_NUM_FC
-        ret = dict(
-            input_shape=input_shape,
-            conv_dim=cfg.ROI_MASK_HEAD_CONV_DIM,
-            fc_dims=[fc_dim] * num_fc,
-            output_shape=output_shape,
-        )
-        return ret
-
-    def forward(self, x):
-        N = x.shape[0]
-        for layer in self.conv_layers:
-            x = layer(x)
-        x = torch.flatten(x, start_dim=1)
-        for layer in self.fcs:
-            x = F.relu(layer(x))
-        output_shape = [N] + list(self.output_shape)
-        x = self.prediction(x)
-        return x.view(*output_shape)#.flatten(1)
     
 class PointRendMaskHead(nn.Module):
     def __init__(self, cfg, input_shape):
@@ -322,14 +132,6 @@ class PointRendMaskHead(nn.Module):
         # coarse mask head
         self.roi_pooler_in_features = cfg.ROI_MASK_HEAD_IN_FEATURES
         self.roi_pooler_size = cfg.ROI_MASK_HEAD_POOLER_RESOLUTION
-        in_channels = self.roi_pooler_in_features
-        self._init_roi_head(
-            cfg,
-            [in_channels, self.roi_pooler_size, self.roi_pooler_size]
-        )
-
-    def _init_roi_head(self, cfg, input_shape):
-        self.coarse_head = ConvFCHead(**ConvFCHead.from_config(cfg, input_shape))
 
     def _init_point_head(self, cfg, input_shape):
         # fmt: off
@@ -366,47 +168,6 @@ class PointRendMaskHead(nn.Module):
                 instances in inference
         """
         pass
-
-    def _roi_pooler(self, features):
-        """
-        Extract per-box feature. This is similar to RoIAlign(sampling_ratio=1) except:
-        1. It's implemented by point_sample
-        2. It pools features across all levels and concat them, while typically
-           RoIAlign select one level for every box. However in the config we only use
-           one level (p2) so there is no difference.
-
-        Returns:
-            Tensor of shape (R, C, pooler_size, pooler_size) where R is the total number of boxes
-        """
-
-        B = len(features)
-        output_size = self.roi_pooler_size
-        point_coords = generate_regular_grid_point_coords(B, output_size, output_size, features.device)
-        # For regular grids of points, this function is equivalent to `len(features_list)' calls
-        # of `ROIAlign` (with `SAMPLING_RATIO=1`), and concat the results.
-        roi_features, _ = point_sample_fine_grained_features(
-            features, self.scale, point_coords
-        )
-        return roi_features.view(B, roi_features.shape[1], output_size, output_size)
-
-    # def _sample_train_points(self, coarse_mask, instances):
-    #     assert self.training
-    #     gt_classes = torch.cat([x.gt_classes for x in instances])
-    #     with torch.no_grad():
-    #         # sample point_coords
-    #         point_coords = get_uncertain_point_coords_with_randomness(
-    #             coarse_mask,
-    #             lambda logits: calculate_uncertainty(logits, gt_classes),
-    #             self.mask_point_train_num_points,
-    #             self.mask_point_oversample_ratio,
-    #             self.mask_point_importance_sample_ratio,
-    #         )
-    #         # sample point_labels
-    #         proposal_boxes = [x.proposal_boxes for x in instances]
-    #         cat_boxes = Boxes.cat(proposal_boxes)
-    #         point_coords_wrt_image = get_point_coords_wrt_image(cat_boxes.tensor, point_coords)
-    #         point_labels = sample_point_labels(instances, point_coords_wrt_image)
-    #     return point_coords, point_labels
 
     def _point_pooler(self, features, point_coords):
         # sample image-level features
@@ -473,18 +234,11 @@ class PointRendMaskHead(nn.Module):
                 )
         return mask_logits
 
-
 class ImplicitPointRendMaskHead(PointRendMaskHead):
     def __init__(self, cfg, input_shape, num_classes=1):
         self.flag = True
         self.num_classes = num_classes
         super().__init__(cfg, input_shape)
-
-    def _init_roi_head(self, cfg, input_shape):
-        pass
-        # assert hasattr(self, "num_params"), "Please initialize point_head first!"
-        # self.parameter_head = ConvFCHead(**ConvFCHead.from_config(cfg, input_shape, (self.num_params,)))
-        # self.parameter_head.output_shape = (self.num_params,)
 
     def _init_point_head(self, cfg, input_shape):
         # fmt: off
@@ -497,7 +251,6 @@ class ImplicitPointRendMaskHead(PointRendMaskHead):
 
         in_channels = input_shape[0]
         self.point_head = ImplicitPointHead(cfg, [in_channels, 1, 1], self.num_classes)
-        # self.num_params = self.point_head.num_params
 
         # inference parameters
         self.mask_point_subdivision_init_resolution = int(
@@ -509,14 +262,28 @@ class ImplicitPointRendMaskHead(PointRendMaskHead):
             == self.mask_point_subdivision_num_points
         )
 
+    def forward(self, features):
+        """
+        Args:
+            features: B C H W
+        """
+        pass
+
+    def _get_point_logits(self, fine_grained_features, point_coords):
+        return self.point_head(fine_grained_features, point_coords)
+
+class BodyMaskHead(ImplicitPointRendMaskHead):
+    def __init__(self, cfg, input_shape, num_classes=1):
+        self.flag = True
+        self.num_classes = num_classes
+        super().__init__(cfg, input_shape)
+
     def forward(self, features, skls=None, gt_masks=None):
         """
         Args:
             features: B C H W
         """
         if self.training:
-            # parameters = self.parameter_head(self._roi_pooler(features))
-
             point_coords, point_labels = self._sample_train_points_with_skeleton(features, skls, gt_masks)
             point_fine_grained_features = self._point_pooler(features, point_coords)
             point_logits = self._get_point_logits(
@@ -525,18 +292,7 @@ class ImplicitPointRendMaskHead(PointRendMaskHead):
 
             return point_logits, point_labels
         else:
-            # parameters = self.parameter_head(self._roi_pooler(features))
             return self._subdivision_inference(features)
-
-    def _uniform_sample_train_points(self, features):
-        assert self.training
-        # uniform sample
-        point_coords = torch.rand(
-            len(features), self.mask_point_train_num_points, 2, device=features.device
-        )
-        # sample point_labels
-        # point_coords_wrt_image = get_point_coords_wrt_image(point_coords)
-        return point_coords
     
     def _sample_train_points_with_skeleton(self, features, skls, gt_masks):
         assert self.training
@@ -547,15 +303,7 @@ class ImplicitPointRendMaskHead(PointRendMaskHead):
         h = int(hf // self.scale)
         w = int(wf // self.scale)
 
-        y_mins = torch.min(skls[:, :, 1], dim=1)[0].type(torch.int)
-        y_maxs = torch.max(skls[:, :, 1], dim=1)[0].type(torch.int)
-        x_mins = torch.min(skls[:, :, 0], dim=1)[0].type(torch.int)
-        x_maxs = torch.max(skls[:, :, 0], dim=1)[0].type(torch.int)
-
-        y_mins = torch.clamp(y_mins - 10, min=0)
-        y_maxs = torch.clamp(y_maxs + 10, max=h)
-        x_mins = torch.clamp(x_mins - 10, min=0)
-        x_maxs = torch.clamp(x_maxs + 10, max=w)
+        y_mins, y_maxs, x_mins, x_maxs = get_min_max_from_skeletons(skls, h, w)
 
         point_coords = []
         point_labels = []
@@ -577,26 +325,31 @@ class ImplicitPointRendMaskHead(PointRendMaskHead):
             point_coords.append(torch.cat([neg_idxs, pos_idxs], dim=0))
             point_labels.append(torch.cat([torch.zeros(num_samples), torch.ones(num_samples)], dim=0))
 
-            # if self.flag:
-            #     plt.imsave(f'./neg_{i}.png', neg_mask.cpu().numpy())
-            #     plt.imsave(f'./pos_{i}.png', pos_mask.cpu().numpy())
-            #     self.flag = False
-
-
         point_coords = torch.stack(point_coords, dim=0).to(features.device)
         point_coords = point_coords / torch.tensor([w-1, h-1], dtype=torch.float, device=features.device).unsqueeze(0)
         point_labels = torch.stack(point_labels, dim=0).to(features.device)
 
-        # print(point_coords.shape)
         return point_coords, point_labels
-
-
-    def _get_point_logits(self, fine_grained_features, point_coords):
-        return self.point_head(fine_grained_features, point_coords)
     
 class JointMaskHead(ImplicitPointRendMaskHead):
     def __init__(self, cfg, input_shape, num_classes=1):
         super().__init__(cfg, input_shape, num_classes)
+
+    def forward(self, features, skls=None, gt_masks=None):
+        """
+        Args:
+            features: B C H W
+        """
+        if self.training:
+            point_coords, point_labels = self._sample_train_points_with_skeleton(features, skls, gt_masks)
+            point_fine_grained_features = self._point_pooler(features, point_coords)
+            point_logits = self._get_point_logits(
+                point_fine_grained_features, point_coords
+            )
+
+            return point_logits, point_labels
+        else:
+            return self._subdivision_inference(features)
 
     def _sample_train_points_with_skeleton(self, features, skls, gt_masks):
         assert self.training
@@ -607,15 +360,7 @@ class JointMaskHead(ImplicitPointRendMaskHead):
         h = int(hf // self.scale)
         w = int(wf // self.scale)
 
-        y_mins = torch.min(skls[:, :, 1], dim=1)[0].type(torch.int)
-        y_maxs = torch.max(skls[:, :, 1], dim=1)[0].type(torch.int)
-        x_mins = torch.min(skls[:, :, 0], dim=1)[0].type(torch.int)
-        x_maxs = torch.max(skls[:, :, 0], dim=1)[0].type(torch.int)
-
-        y_mins = torch.clamp(y_mins - 10, min=0)
-        y_maxs = torch.clamp(y_maxs + 10, max=h)
-        x_mins = torch.clamp(x_mins - 10, min=0)
-        x_maxs = torch.clamp(x_maxs + 10, max=w)
+        y_mins, y_maxs, x_mins, x_maxs = get_min_max_from_skeletons(skls, h, w)
 
         point_coords = []
         point_labels = []
@@ -630,11 +375,6 @@ class JointMaskHead(ImplicitPointRendMaskHead):
             if torch.sum(neg_mask) == 0:
                 neg_mask[0, 0] = True
             neg_idxs = torch.nonzero(neg_mask).flip(1)
-
-            # if self.flag:
-            #     plt.imsave(f'./neg_{i}.png', neg_mask.cpu().numpy())
-            #     # plt.imsave(f'./pos_{i}.png', pos_mask.cpu().numpy())
-            #     self.flag = False
 
             neg_idxs = neg_idxs[torch.randperm(len(neg_idxs)),:][:num_samples_neg]
             while len(neg_idxs) < num_samples_neg:
@@ -659,7 +399,6 @@ class JointMaskHead(ImplicitPointRendMaskHead):
         point_coords = point_coords / torch.tensor([w-1, h-1], dtype=torch.float, device=features.device).unsqueeze(0)
         point_labels = torch.stack(point_labels, dim=0).to(features.device)
 
-        # print(point_coords.shape)
         return point_coords, point_labels
     
 class FlowMaskHead(ImplicitPointRendMaskHead):
@@ -718,13 +457,10 @@ class FlowMaskHead(ImplicitPointRendMaskHead):
             point_coords.append(torch.cat([neg_idxs, pos_idxs], dim=0))
             point_labels.append(torch.cat([torch.zeros(num_samples), torch.ones(num_samples)], dim=0))
 
-            # print(f'neg_idxs: {len(neg_idxs)}, pos_idxs: {len(pos_idxs)}')
-
         point_coords = torch.stack(point_coords, dim=0).to(features.device)
         point_coords = point_coords / torch.tensor([w-1, h-1], dtype=torch.float, device=features.device).unsqueeze(0)
         point_labels = torch.stack(point_labels, dim=0).to(features.device)
 
-        # print(point_coords.shape)
         return point_coords, point_labels
     
 if __name__ == '__main__':

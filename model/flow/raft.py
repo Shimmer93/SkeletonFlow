@@ -133,6 +133,6 @@ class RAFT(nn.Module):
         flow = coords1 - coords0
 
         if test_mode:
-            return [coords1 - coords0, flow_up], (net, corr, flow)
+            return [coords1 - coords0, flow_up]
             
-        return flow_predictions, (net, corr, flow)
+        return flow_predictions

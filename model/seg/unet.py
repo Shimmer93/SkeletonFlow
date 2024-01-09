@@ -158,7 +158,7 @@ class Head(nn.Module):
             return y
         
 class FeatureHead(nn.Module):
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels):
         super(FeatureHead, self).__init__()
         self.head = nn.Sequential(
             ConvBlock(in_channels, in_channels),
@@ -173,16 +173,14 @@ class UNet(nn.Module):
         super(UNet, self).__init__()
         self.encoder = Encoder(type=type, pretrained=pretrained)
         self.decoder = Decoder(self.encoder.enc_dims)
-        self.head_body = FeatureHead(self.encoder.enc_dims[0], 1)
-        self.head_joint = FeatureHead(self.encoder.enc_dims[0], num_joints)
+        self.head_body = FeatureHead(self.encoder.enc_dims[0])
+        self.head_joint = FeatureHead(self.encoder.enc_dims[0])
 
     def forward(self, x):
         x1, x2, x3 = self.encoder(x)
         x = self.decoder(x1, x2, x3)
         f_body = self.head_body(x)
         f_joint = self.head_joint(x)
-        # x = torch.cat([x_flow, x_body_joint], dim=1)
-        # x = upsample(x, ratio=4)
         return f_body, f_joint
     
 class UNetFlow(nn.Module):
@@ -190,7 +188,7 @@ class UNetFlow(nn.Module):
         super(UNetFlow, self).__init__()
         self.encoder = Encoder(type=type, pretrained=False)
         self.decoder = Decoder(self.encoder.enc_dims)
-        self.head_flow = FeatureHead(self.encoder.enc_dims[0], 1)
+        self.head_flow = FeatureHead(self.encoder.enc_dims[0])
 
         self.encoder.enc1[0] = nn.Conv2d(2, 64, kernel_size=7, stride=2, padding=3, bias=False)
 
@@ -210,7 +208,4 @@ class UNetFlow(nn.Module):
         x1, x2, x3 = self.encoder(x)
         x = self.decoder(x1, x2, x3)
         f = self.head_flow(x)
-
-        # print(f'max: {torch.max(f).item()}, min: {torch.min(f).item()}')
-        # x = upsample(x, ratio=4)
         return f

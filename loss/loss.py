@@ -3,24 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from loss.flow import FlowLoss
+from misc.skeleton import get_min_max_from_skeletons
 
-def get_min_max_from_skeletons(skls, H, W):
-    y_mins = torch.min(skls[:, :, 1], dim=1)[0].type(torch.int)
-    y_maxs = torch.max(skls[:, :, 1], dim=1)[0].type(torch.int)
-    x_mins = torch.min(skls[:, :, 0], dim=1)[0].type(torch.int)
-    x_maxs = torch.max(skls[:, :, 0], dim=1)[0].type(torch.int)
-
-    y_mins = torch.clamp(y_mins - 10, min=0)
-    y_maxs = torch.clamp(y_maxs + 10, max=H)
-    x_mins = torch.clamp(x_mins - 10, min=0)
-    x_maxs = torch.clamp(x_maxs + 10, max=W)
-    
-    return y_mins, y_maxs, x_mins, x_maxs
-
-class BodySegLoss(nn.Module):
+class BodySegValLoss(nn.Module):
     def __init__(self, w_neg=1):
-        super(BodySegLoss, self).__init__()
+        super(BodySegValLoss, self).__init__()
         self.criterion = nn.BCEWithLogitsLoss()
         self.w_neg = w_neg
 
@@ -46,9 +33,9 @@ class BodySegLoss(nn.Module):
 
         return loss
     
-class FlowSegLoss(nn.Module):
+class FlowSegValLoss(nn.Module):
     def __init__(self, w_neg=1):
-        super(FlowSegLoss, self).__init__()
+        super(FlowSegValLoss, self).__init__()
         self.criterion = nn.BCEWithLogitsLoss()
         self.w_neg = w_neg
 
@@ -63,8 +50,6 @@ class FlowSegLoss(nn.Module):
         pos_masks = (flows_centered_norm > flows_centered_norm_max * 0.8).squeeze(1)
         neg_masks = (flows_centered_norm < flows_centered_norm_max * 0.2).squeeze(1)
 
-        # print(pos_masks.shape, neg_masks.shape, masks.shape)
-
         pos_preds = masks[pos_masks]
         pos_gt = torch.ones_like(pos_preds)
         neg_preds = masks[neg_masks]
@@ -76,23 +61,10 @@ class FlowSegLoss(nn.Module):
         loss = pos_loss + self.w_neg * neg_loss
 
         return loss
-    
-class BodySegLoss2(nn.Module):
-    def __init__(self):
-        super(BodySegLoss2, self).__init__()
-        self.criterion = nn.BCEWithLogitsLoss()
-
-    def forward(self, point_logits, point_labels):
-        # point_logits: B P
-        # point_labels: B P
-
-        loss = self.criterion(point_logits, point_labels)
-
-        return loss 
         
-class JointSegLoss2(nn.Module):
+class JointSegTrainLoss(nn.Module):
     def __init__(self, w_neg=1):
-        super(JointSegLoss2, self).__init__()
+        super(JointSegTrainLoss, self).__init__()
         self.criterion = nn.BCEWithLogitsLoss()
         self.w_neg = w_neg
 
@@ -116,47 +88,9 @@ class JointSegLoss2(nn.Module):
 
         return loss
     
-class FlowGuidedSegLoss(nn.Module):
-    def __init__(self, w_neg=1):
-        super(FlowGuidedSegLoss, self).__init__()
-        self.criterion_sup = nn.BCEWithLogitsLoss()
-        self.criterion_unsup = FlowLoss()
-        self.w_neg = w_neg
-
-    def forward(self, feats, skls, flows, masks, unsup=True):
-        # feats: B C h w
-        # skls: B J 2
-        # flows: B 2 H W
-
-        B, _, H, W = flows.size()
-        y_mins, y_maxs, x_mins, x_maxs = get_min_max_from_skeletons(skls, H, W)
-        neg_masks = torch.ones((B, H, W), dtype=torch.bool)
-        for i in range(B):
-            neg_masks[i, y_mins[i]:y_maxs[i], x_mins[i]:x_maxs[i]] = 0
-
-        flows_mean = torch.mean(flows, dim=(2, 3), keepdim=True)
-        flows_centered = flows - flows_mean
-        flows_centered_norm = flows_centered.norm(dim=1, keepdim=True)
-        flows_centered_norm_max = flows_centered_norm.flatten(2).max(dim=2)[0].unsqueeze(1).unsqueeze(1)
-        masks_flow = flows_centered_norm > 0.3 * flows_centered_norm_max
-        masks_flow = masks_flow.squeeze(1)
-
-        pos_preds = masks[masks_flow]
-        pos_gt = torch.ones_like(pos_preds)
-        neg_preds = masks[neg_masks]
-        neg_gt = torch.zeros_like(neg_preds)
-        loss = self.criterion_sup(pos_preds, pos_gt) + self.w_neg * self.criterion_sup(neg_preds, neg_gt)
-
-        if unsup:
-            flows_norm = flows.norm(dim=1, keepdim=True)
-            max_norm = flows_norm.flatten(2).max(dim=2)[0].unsqueeze(1).unsqueeze(1)
-            loss += self.criterion_unsup(feats, flows, max_norm)
-
-        return loss
-    
-class JointSegLoss(nn.Module):
+class JointSegValLoss(nn.Module):
     def __init__(self, w_neg1=2, w_neg2=5):
-        super(JointSegLoss, self).__init__()
+        super(JointSegValLoss, self).__init__()
         self.criterion = nn.BCEWithLogitsLoss()
         self.w_neg1 = w_neg1
         self.w_neg2 = w_neg2
@@ -167,16 +101,7 @@ class JointSegLoss(nn.Module):
         # masks: B J H W
         # gt_masks: B J H W
 
-        # print(skls.shape, masks.shape, gt_masks.shape)
-
         B, J, H, W = masks.size()
-
-        # if self.flag:
-        #     gt_sum = torch.sum(gt_masks, dim=1)
-        #     gt_sum = (gt_sum > 0).float()
-        #     import matplotlib.pyplot as plt
-        #     plt.imsave('gt_sum.png', gt_sum[0].cpu().numpy())
-        #     self.flag = False
 
         y_mins, y_maxs, x_mins, x_maxs = get_min_max_from_skeletons(skls, H, W)
 
@@ -206,38 +131,6 @@ class JointSegLoss(nn.Module):
         # loss /= J
 
         return loss
-
-# class JointSegLoss(nn.Module):
-#     def __init__(self, w_neg=1):
-#         super(JointSegLoss, self).__init__()
-#         self.criterion = nn.CrossEntropyLoss()
-#         self.w_neg = w_neg
-
-#     def forward(self, masks, gt_masks):
-#         # masks: B J H W
-#         # gt_masks: B H W
-#         B, J, H, W = masks.size()
-
-#         masks_ = F.softmax(masks, dim=1)
-
-#         loss = 0
-#         for i in range(B):
-#             pos_mask = (gt_masks[i] > 0)
-#             neg_mask = (gt_masks[i] == 0)
-
-#             pos_preds = masks_[i, :, pos_mask].unsqueeze(0)
-#             pos_gt = gt_masks[i, pos_mask].unsqueeze(0)
-#             neg_preds = masks_[i, :, neg_mask].unsqueeze(0)
-#             neg_gt = gt_masks[i, neg_mask].unsqueeze(0)
-
-#             pos_loss = self.criterion(pos_preds, pos_gt.long())
-#             neg_loss = self.criterion(neg_preds, neg_gt.long())
-#             loss += pos_loss + self.w_neg * neg_loss
-#         loss /= B
-#         # print(masks.shape, gt_masks.shape)
-#         # loss = self.criterion(masks, gt_masks.long())
-
-#         return loss
     
 class JointConsistLoss(nn.Module):
     def __init__(self):
@@ -282,26 +175,5 @@ class JointConsistLoss(nn.Module):
         #         masks_warped[j,i,...] = torch.roll(masks_warped[j,i,...], skl_disps[j,i,0].item(), dims=1)
 
         loss = self.criterion(masks_warped, masks0.detach())
-
-        return loss
-
-class WeakSupFlowLoss(nn.Module):
-    def __init__(self):
-        super(WeakSupFlowLoss, self).__init__()
-        self.criterion = nn.CosineSimilarity(dim=0, eps=1e-6)
-
-    def forward(self, flow, gt_flow):
-        # flow: B 2 H W
-        # gt_flow: B 2 H W
-
-        gt_flow_norm = gt_flow.norm(dim=1)
-        # pos_mask = (gt_flow_norm.repeat(1, 2, 1, 1) > 0)
-        pos_mask = (gt_flow_norm > 0)
-        # pos_pred = flow[pos_mask]
-        # pos_gt = gt_flow[pos_mask]
-        pos_pred = flow.transpose(0, 1)[:, pos_mask]
-        pos_gt = gt_flow.transpose(0, 1)[:, pos_mask]
-
-        loss = -self.criterion(pos_pred, pos_gt).mean()
 
         return loss

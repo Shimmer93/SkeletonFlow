@@ -4,37 +4,33 @@ import torch.nn.functional as F
 from torchvision import models
 from torchvision.models.segmentation.deeplabv3 import DeepLabHead, ASPP
 
-class DeepLabHeadWithFeature(nn.Module):
-    def __init__(self, in_channels: int, num_classes: int) -> None:
+class DeepLabFeatureHead(nn.Module):
+    def __init__(self, in_channels: int) -> None:
 
         super().__init__()
         self.aspp = ASPP(in_channels, [12, 24, 36])
         self.conv1 = nn.Conv2d(256, 256, 3, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(256)
         self.relu1 = nn.ReLU()
-        # self.conv2 = nn.Conv2d(256, num_classes, 1)
     
     def forward(self, x):
         x = self.aspp(x)
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu1(x)
-        # feat = x
-        # x = self.conv2(x)
-        # return x, feat
         return x
     
 class DeepLabMultiHead(nn.Module):
-    def __init__(self, in_channels: int, num_classes: int) -> None:
+    def __init__(self, in_channels: int) -> None:
         super().__init__()
 
-        self.body_head = DeepLabHeadWithFeature(in_channels, 1)
-        self.joint_head = DeepLabHead(in_channels, num_classes)
+        self.body_head = DeepLabFeatureHead(in_channels)
+        self.joint_head = DeepLabFeatureHead(in_channels)
 
     def forward(self, x):
         body_feat = self.body_head(x)
-        joint = self.joint_head(x)
-        return joint, body_feat
+        joint_feat = self.joint_head(x)
+        return body_feat, joint_feat
 
 class DeepLabV3(nn.Module):
     def __init__(self, type='resnet50', pretrained=True, num_joints=2):
@@ -48,27 +44,40 @@ class DeepLabV3(nn.Module):
         else:
             raise ValueError('Unknown type of DeepLabV3')
         
-        self.model.classifier = DeepLabMultiHead(2048, num_joints)
+        self.model.classifier = DeepLabMultiHead(2048)
         
     def forward(self, x):
-        # def forward(self, x: Tensor) -> Dict[str, Tensor]:
-        input_shape = x.shape[-2:]
+        # contract: features is a dict of tensors
+        features = self.model.backbone(x)
+        x = features["out"]
+        f_body, f_joint = self.model.classifier(x)
+
+        return f_body, f_joint
+    
+class DeepLabV3Flow(nn.Module):
+    def __init__(self, type='resnet50', pretrained=True, num_joints=2):
+        super(DeepLabV3Flow, self).__init__()
+        if type == 'resnet50':
+            self.model = models.segmentation.deeplabv3_resnet50(weights_backone=models.ResNet50_Weights.DEFAULT if pretrained else None, num_classes=num_joints)
+        elif type == 'resnet101':
+            self.model = models.segmentation.deeplabv3_resnet101(weights_backone=models.ResNet101_Weights.DEFAULT if pretrained else None, num_classes=num_joints)
+        elif type == 'mobilenet':
+            self.model = models.segmentation.deeplabv3_mobilenet_v3_large(weights_backone=models.MobileNet_V3_Large_Weights.DEFAULT if pretrained else None, num_classes=num_joints)
+        else:
+            raise ValueError('Unknown type of DeepLabV3')
+        
+        self.model.classifier = DeepLabMultiHead(2048)
+        # self.model.backbone = None
+        
+    def forward(self, x):
         # contract: features is a dict of tensors
         features = self.model.backbone(x)
 
         # result = OrderedDict()
         x = features["out"]
-        x, f = self.model.classifier(x)
-        x = F.interpolate(x, size=input_shape, mode="bilinear", align_corners=False)
-        # result["out"] = x
+        f_body, f_joint = self.model.classifier(x)
 
-        # if self.aux_classifier is not None:
-        #     x = features["aux"]
-        #     x = self.aux_classifier(x)
-        #     x = F.interpolate(x, size=input_shape, mode="bilinear", align_corners=False)
-            # result["aux"] = x
-
-        return x, f
+        return f_body, f_joint
     
 if __name__ == '__main__':
     model = DeepLabV3(type='resnet50', pretrained=True, num_joints=17)
