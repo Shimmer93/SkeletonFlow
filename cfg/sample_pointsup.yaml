@@ -4,7 +4,7 @@ pretrained: False
 sync_batchnorm: False
 clip_grad: null
 precision: 16
-epochs: 200
+epochs: 100
 # --------------------------------------
 # Dataset parameters
 # --------------------------------------
@@ -28,7 +28,7 @@ warmup_epochs: 20
 # --------------------------------------
 # Segmentation Model parameters
 # --------------------------------------
-seg_model_name: unet
+seg_model_name: deeplabv3
 seg_type: resnet50
 seg_pretrained: True
 num_joints: 15
@@ -43,26 +43,14 @@ small: False
 # --------------------------------------
 # Point Head parameters
 # --------------------------------------
-POINT_HEAD_NUM_FC: 3
-POINT_HEAD_FC_DIM: 256
-POINT_HEAD_TRAIN_NUM_POINTS: 128
-POINT_HEAD_SUBDIVISION_STEPS: 3
-POINT_HEAD_SUBDIVISION_NUM_POINTS: 784
-IMPLICIT_POINTREND_IMAGE_FEATURE_ENABLED: True
-IMPLICIT_POINTREND_POS_ENC_ENABLED: True
-ROI_MASK_HEAD_OUTPUT_SIDE_RESOLUTION: 14
-ROI_MASK_HEAD_FC_DIM: 512
-ROI_MASK_HEAD_NUM_FC: 2
-ROI_MASK_HEAD_CONV_DIM: 256
-ROI_MASK_HEAD_IN_FEATURES: 512
-ROI_MASK_HEAD_POOLER_RESOLUTION: 14
-# --------------------------------------
-# Model Head parameters
-# --------------------------------------
-corr_levels: 4
-corr_radius: 4
-hidden_dim: 128
-sf_dim: 256
+scale: 0.125
+point_head_num_fc: 3
+point_head_fc_dim: 256
+train_num_points: 128
+subdivision_steps: 3
+subdivision_num_points: 784
+image_feature_enabled: True
+pos_enc_enabled: True
 # --------------------------------------
 # Loss parameters
 # --------------------------------------

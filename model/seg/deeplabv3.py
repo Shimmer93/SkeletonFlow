@@ -66,18 +66,32 @@ class DeepLabV3Flow(nn.Module):
         else:
             raise ValueError('Unknown type of DeepLabV3')
         
-        self.model.classifier = DeepLabMultiHead(2048)
+        self.model.classifier = DeepLabFeatureHead(2048)
         # self.model.backbone = None
+        self.model.backbone.conv1 = nn.Conv2d(2, 64, kernel_size=7, stride=2, padding=3, bias=False)
+
+        self._init_params()
+
+    def _init_params(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight.data, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias.data)
         
     def forward(self, x):
+        x_mean = torch.mean(x, dim=(2, 3), keepdim=True)
+        x_std = torch.std(x, dim=(2, 3), keepdim=True)
+        x = (x - x_mean) / x_std
+        
         # contract: features is a dict of tensors
         features = self.model.backbone(x)
 
         # result = OrderedDict()
         x = features["out"]
-        f_body, f_joint = self.model.classifier(x)
+        f_flow = self.model.classifier(x)
 
-        return f_body, f_joint
+        return f_flow
     
 if __name__ == '__main__':
     model = DeepLabV3(type='resnet50', pretrained=True, num_joints=17)

@@ -11,6 +11,22 @@ sys.path.append('/mnt/home/zpengac/USERDIR/HAR/SkeletonFlow')
 from data.utils import read_image, skeletons_to_flow, add_inter_kp_in_skl, skeleton_to_body_mask, skeleton_to_joint_mask
 
 class SubJHMDBDataset(Dataset):
+    flip_idxs = [0,1,2,4,3,6,5,8,7,10,9,12,11,14,13]
+
+    body_parts = {
+        'head': [[0, 2]],
+        'torso': [[0, 1], [0, 3], [0, 4], [1, 5], [1, 6], [3, 5], [4, 6], [5, 6]],
+        'left upper arm': [[3, 7]],
+        'left lower arm': [[7, 11]],
+        'right upper arm': [[4, 8]],
+        'right lower arm': [[8, 12]],
+        'left upper leg': [[5, 9]],
+        'left lower leg': [[9, 13]],
+        'right upper leg': [[6, 10]],
+        'right lower leg': [[10, 14]]
+    }
+
+
     def __init__(self, data_dir, mode='train', split=1, n_inter=2, all_tsfm=None, frm_tsfm=None):
         super().__init__()
 
@@ -20,21 +36,6 @@ class SubJHMDBDataset(Dataset):
         self.n_inter = n_inter
         self.all_tsfm = all_tsfm
         self.frm_tsfm = frm_tsfm
-        self.flip_idxs = [0,1,2,4,3,6,5,8,7,10,9,12,11,14,13]
-        self.adj_pairs = [[0,1],[0,2],[0,3],[0,4],[1,5],[1,6],[3,7],[4,8],[5,9],[6,10],[7,11],[8,12],[9,13],[10,14]]
-        self.body_parts = {
-            'head': [[0, 2]],
-            'torso': [[0, 1], [0, 3], [0, 4], [1, 5], [1, 6], [3, 5], [4, 6], [5, 6]],
-            'left upper arm': [[3, 7]],
-            'left lower arm': [[7, 11]],
-            'right upper arm': [[4, 8]],
-            'right lower arm': [[8, 12]],
-            'left upper leg': [[5, 9]],
-            'left lower leg': [[9, 13]],
-            'right upper leg': [[6, 10]],
-            'right lower leg': [[10, 14]]
-        }
-        self.joint_groups = [[0], [1], [2], [3, 4], [5, 6], [7, 8], [9, 10], [11, 12], [13, 14]]
 
         # train_test = 'train' if mode in ['train', 'val'] else 'test'
         train_test = 'train' if mode == 'train' else 'test'
@@ -65,19 +66,19 @@ class SubJHMDBDataset(Dataset):
         skl1 = self._get_skeleton(i1)
         skls = np.stack([skl0, skl1], axis=0)
 
-        frms, skls = self.all_tsfm(frms, skls, self.flip_idxs)
+        frms, skls = self.all_tsfm(frms, skls, SubJHMDBDataset.flip_idxs)
         frms = self.frm_tsfm(frms)
         flow = skeletons_to_flow(skls[0], skls[1], frms.shape[2], frms.shape[3])
         
-        mask_body0 = skeleton_to_body_mask(skls[0], self.body_parts, frms.shape[2], frms.shape[3])
-        mask_body1 = skeleton_to_body_mask(skls[1], self.body_parts, frms.shape[2], frms.shape[3])
+        mask_body0 = skeleton_to_body_mask(skls[0], SubJHMDBDataset.body_parts, frms.shape[2], frms.shape[3])
+        mask_body1 = skeleton_to_body_mask(skls[1], SubJHMDBDataset.body_parts, frms.shape[2], frms.shape[3])
         mask_joint0 = skeleton_to_joint_mask(skls[0], frms.shape[2], frms.shape[3])
         mask_joint1 = skeleton_to_joint_mask(skls[1], frms.shape[2], frms.shape[3])
         masks_body = torch.stack([mask_body0, mask_body1], dim=0)
         masks_joint = torch.cat([mask_joint0, mask_joint1], dim=0)
         masks = torch.cat([masks_body, masks_joint], dim=0)
 
-        return frms, skls, flow, masks, frm0_fn
+        return frms, skls, flow, masks, frm0_fn, SubJHMDBDataset.flip_idxs
     
     def __len__(self):
         return len(self.frm_data)

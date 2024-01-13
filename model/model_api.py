@@ -12,7 +12,7 @@ from collections import OrderedDict
 
 import matplotlib.pyplot as plt
 
-from model.seg.deeplabv3 import DeepLabV3
+from model.seg.deeplabv3 import DeepLabV3, DeepLabV3Flow
 from model.seg.unet import UNet, UNetFlow
 
 from model.flow.raft import RAFT
@@ -28,7 +28,8 @@ def normalize_imagenet(img):
 
 def create_model_seg(hparams):
     if hparams.seg_model_name == 'deeplabv3':
-        return DeepLabV3(type=hparams.seg_type, pretrained=hparams.seg_pretrained, num_joints=hparams.num_joints)
+        return DeepLabV3(type=hparams.seg_type, pretrained=hparams.seg_pretrained, num_joints=hparams.num_joints), \
+                DeepLabV3Flow(type=hparams.seg_type, pretrained=hparams.seg_pretrained, num_joints=hparams.num_joints)
     elif hparams.seg_model_name == 'unet':
         return UNet(type=hparams.seg_type, pretrained=hparams.seg_pretrained, num_joints=hparams.num_joints), \
                 UNetFlow(type=hparams.seg_type)
@@ -84,9 +85,9 @@ class LitModel(pl.LightningModule):
         self.model_seg, self.model_seg_flow = create_model_seg(hparams)
         self.model_flow = create_model_flow(hparams)
 
-        self.head_joint = JointMaskHead(hparams, input_shape=[256, 14, 14], num_classes=hparams.num_joints)
-        self.head_body = BodyMaskHead(hparams, input_shape=[256, 14, 14])
-        self.head_flow = FlowMaskHead(hparams, input_shape=[256, 14, 14])
+        self.head_joint = JointMaskHead(hparams, in_channels=256, num_classes=hparams.num_joints)
+        self.head_body = BodyMaskHead(hparams, in_channels=256)
+        self.head_flow = FlowMaskHead(hparams, in_channels=256)
         
         self.body_seg_loss = nn.BCEWithLogitsLoss()
         self.joint_seg_loss = JointSegTrainLoss()
@@ -143,6 +144,7 @@ class LitModel(pl.LightningModule):
         # masks: B 2 J+2 H W
 
         frms = input['frms']
+        flip_idxs = input['flip_idxs']
         flows = output['flow']
         masks_joints = output['masks_joint']
         masks_body = output['mask_body']
@@ -150,7 +152,12 @@ class LitModel(pl.LightningModule):
 
         num_kps = self.hparams.num_joints
         masks_body = (F.sigmoid(masks_body) > 0.5).float()
-        masks_joints = (F.sigmoid(masks_joints) > 0.5).float()
+        # masks_joints = (F.sigmoid(masks_joints) > 0.5).float()
+        for i in range(masks_joints.shape[1]):
+            if i != flip_idxs[i]:
+                masks_joints[:,i,...] = ((masks_joints[:,i,...] > masks_joints[:,flip_idxs[i],...]) & (F.sigmoid(masks_joints[:,i,...]) > 0.5)).float()
+            else:
+                masks_joints[:,i,...] = (F.sigmoid(masks_joints[:,i,...]) > 0.5).float()
         masks_joints_neg = (torch.max(masks_joints, dim=1, keepdim=True)[0] < 0.5).float()
         masks_joint = torch.argmax(torch.cat([masks_joints_neg, masks_joints], dim=1), dim=1) # * masks_body
         masks_flow = (F.sigmoid(masks_flow) > 0.5).float()

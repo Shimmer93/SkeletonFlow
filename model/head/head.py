@@ -51,7 +51,7 @@ class ImplicitPointHead(nn.Module):
     takes both fine-grained features and instance-wise MLP parameters as its input.
     """
 
-    def __init__(self, cfg, input_shape, num_classes=1):
+    def __init__(self, cfg, in_channels, num_classes=1):
         """
         The following attributes are parsed from config:
             channels: the output dimension of each FC layers
@@ -61,19 +61,19 @@ class ImplicitPointHead(nn.Module):
         """
         super(ImplicitPointHead, self).__init__()
         # fmt: off
-        self.num_layers                         = cfg.POINT_HEAD_NUM_FC + 1
-        self.channels                           = cfg.POINT_HEAD_FC_DIM
-        self.image_feature_enabled              = cfg.IMPLICIT_POINTREND_IMAGE_FEATURE_ENABLED
-        self.positional_encoding_enabled        = cfg.IMPLICIT_POINTREND_POS_ENC_ENABLED
+        self.num_layers                         = cfg.point_head_num_fc + 1
+        self.channels                           = cfg.point_head_fc_dim
+        self.image_feature_enabled              = cfg.image_feature_enabled
+        self.positional_encoding_enabled        = cfg.pos_enc_enabled
         self.num_classes                        = num_classes
-        self.in_channels                        = input_shape[0]
+        self.in_channels                        = in_channels
         # fmt: on
 
         if not self.image_feature_enabled:
             self.in_channels = 0
         if self.positional_encoding_enabled:
-            self.in_channels += 256
-            self.register_buffer("positional_encoding_gaussian_matrix", torch.randn((2, 128)))
+            self.in_channels += self.channels
+            self.register_buffer("positional_encoding_gaussian_matrix", torch.randn((2, self.channels//2)))
 
         assert self.in_channels > 0
 
@@ -107,7 +107,7 @@ class ImplicitPointHead(nn.Module):
             locations = 2 * np.pi * locations
             locations = torch.cat([torch.sin(locations), torch.cos(locations)], dim=1)
             # locations: [R, C, K]
-            locations = locations.reshape(num_instances, num_points, 256).permute(0, 2, 1)
+            locations = locations.reshape(num_instances, num_points, self.channels).permute(0, 2, 1)
             if not self.image_feature_enabled:
                 fine_grained_features = locations
             else:
@@ -122,53 +122,43 @@ class ImplicitPointHead(nn.Module):
         point_logits = point_logits.reshape(B, L, self.num_classes).transpose(1, 2)
 
         return point_logits
-    
-class PointRendMaskHead(nn.Module):
-    def __init__(self, cfg, input_shape):
+
+class ImplicitPointRendMaskHead(nn.Module):
+    def __init__(self, cfg, in_channels, num_classes=1):
         super().__init__()
-        self.scale = 1.0 / 4
-        # point head
-        self._init_point_head(cfg, input_shape)
-        # coarse mask head
-        self.roi_pooler_in_features = cfg.ROI_MASK_HEAD_IN_FEATURES
-        self.roi_pooler_size = cfg.ROI_MASK_HEAD_POOLER_RESOLUTION
-
-    def _init_point_head(self, cfg, input_shape):
+        self.num_classes = num_classes
         # fmt: off
-        self.mask_point_on                      = cfg.ROI_MASK_HEAD_POINT_HEAD_ON
-        if not self.mask_point_on:
-            return
-        self.mask_point_in_features             = cfg.POINT_HEAD_IN_FEATURES
-        self.mask_point_train_num_points        = cfg.POINT_HEAD_TRAIN_NUM_POINTS
-        self.mask_point_oversample_ratio        = cfg.POINT_HEAD_OVERSAMPLE_RATIO
-        self.mask_point_importance_sample_ratio = cfg.POINT_HEAD_IMPORTANCE_SAMPLE_RATIO
-        # next three parameters are use in the adaptive subdivions inference procedure
-        self.mask_point_subdivision_init_resolution = cfg.ROI_MASK_HEAD_OUTPUT_SIDE_RESOLUTION
-        self.mask_point_subdivision_steps       = cfg.POINT_HEAD_SUBDIVISION_STEPS
-        self.mask_point_subdivision_num_points  = cfg.POINT_HEAD_SUBDIVISION_NUM_POINTS
+        self.mask_point_on = True  # always on
+        self.mask_point_train_num_points        = cfg.train_num_points
+        # next two parameters are use in the adaptive subdivions inference procedure
+        self.mask_point_subdivision_steps       = cfg.subdivision_steps
+        self.mask_point_subdivision_num_points  = cfg.subdivision_num_points
         # fmt: on
+        self.scale = cfg.scale #1.0 / 4
+        self.feat_scale = int((2 ** self.mask_point_subdivision_steps) * self.scale)
 
-        in_channels = int(np.sum([input_shape[f].channels for f in self.mask_point_in_features]))
-        self.point_head = ImplicitPointHead(cfg, [in_channels, 1, 1])
+        # inference parameters
+        self.mask_point_subdivision_init_resolution = int(
+            math.sqrt(self.mask_point_subdivision_num_points)
+        )
+        assert (
+            self.mask_point_subdivision_init_resolution
+            * self.mask_point_subdivision_init_resolution
+            == self.mask_point_subdivision_num_points
+        )
 
-        # An optimization to skip unused subdivision steps: if after subdivision, all pixels on
-        # the mask will be selected and recomputed anyway, we should just double our init_resolution
-        while (
-            4 * self.mask_point_subdivision_init_resolution**2
-            <= self.mask_point_subdivision_num_points
-        ):
-            self.mask_point_subdivision_init_resolution *= 2
-            self.mask_point_subdivision_steps -= 1
+        self.point_head = ImplicitPointHead(cfg, in_channels, self.num_classes)
 
     def forward(self, features):
         """
         Args:
-            features (dict[str, Tensor]): a dict of image-level features
-            instances (list[Instances]): proposals in training; detected
-                instances in inference
+            features: B C H W
         """
         pass
 
+    def _get_point_logits(self, fine_grained_features, point_coords):
+        return self.point_head(fine_grained_features, point_coords)
+    
     def _point_pooler(self, features, point_coords):
         # sample image-level features
         point_fine_grained_features, _ = point_sample_fine_grained_features(
@@ -176,15 +166,10 @@ class PointRendMaskHead(nn.Module):
         )
         return point_fine_grained_features
 
-    def _get_point_logits(self, point_fine_grained_features, point_coords, coarse_mask):
-        coarse_features = point_sample(coarse_mask, point_coords, align_corners=False)
-        point_logits = self.point_head(point_fine_grained_features, coarse_features)
-        return point_logits
-
     def _subdivision_inference(self, features):
         assert not self.training
 
-        mask_point_subdivision_num_points = features.shape[-2] * features.shape[-1] // 4
+        mask_point_subdivision_num_points = features.shape[-2] * features.shape[-1] // (self.feat_scale ** 2)
         mask_logits = None
         # +1 here to include an initial step to generate the coarsest mask
         # prediction with init_resolution, when mask_logits is None.
@@ -193,10 +178,11 @@ class PointRendMaskHead(nn.Module):
         # so it will be completely overwritten during subdivision anyway.
         for _ in range(self.mask_point_subdivision_steps + 1):
             if mask_logits is None:
+                # print(features.shape[-2]//self.feat_scale, features.shape[-1]//self.feat_scale)
                 point_coords = generate_regular_grid_point_coords(
                     features.shape[0],
-                    features.shape[-2]//2,
-                    features.shape[-1]//2,
+                    features.shape[-2]//self.feat_scale,
+                    features.shape[-1]//self.feat_scale,
                     features.device,
                 )
             else:
@@ -220,8 +206,8 @@ class PointRendMaskHead(nn.Module):
                 mask_logits = point_logits.reshape(
                     R,
                     C,
-                    features.shape[-2]//2,
-                    features.shape[-1]//2,
+                    features.shape[-2]//self.feat_scale,
+                    features.shape[-1]//self.feat_scale,
                 )
             else:
                 # Put point predictions to the right places on the upsampled grid.
@@ -234,49 +220,11 @@ class PointRendMaskHead(nn.Module):
                 )
         return mask_logits
 
-class ImplicitPointRendMaskHead(PointRendMaskHead):
-    def __init__(self, cfg, input_shape, num_classes=1):
-        self.flag = True
-        self.num_classes = num_classes
-        super().__init__(cfg, input_shape)
-
-    def _init_point_head(self, cfg, input_shape):
-        # fmt: off
-        self.mask_point_on = True  # always on
-        self.mask_point_train_num_points        = cfg.POINT_HEAD_TRAIN_NUM_POINTS
-        # next two parameters are use in the adaptive subdivions inference procedure
-        self.mask_point_subdivision_steps       = cfg.POINT_HEAD_SUBDIVISION_STEPS
-        self.mask_point_subdivision_num_points  = cfg.POINT_HEAD_SUBDIVISION_NUM_POINTS
-        # fmt: on
-
-        in_channels = input_shape[0]
-        self.point_head = ImplicitPointHead(cfg, [in_channels, 1, 1], self.num_classes)
-
-        # inference parameters
-        self.mask_point_subdivision_init_resolution = int(
-            math.sqrt(self.mask_point_subdivision_num_points)
-        )
-        assert (
-            self.mask_point_subdivision_init_resolution
-            * self.mask_point_subdivision_init_resolution
-            == self.mask_point_subdivision_num_points
-        )
-
-    def forward(self, features):
-        """
-        Args:
-            features: B C H W
-        """
-        pass
-
-    def _get_point_logits(self, fine_grained_features, point_coords):
-        return self.point_head(fine_grained_features, point_coords)
-
 class BodyMaskHead(ImplicitPointRendMaskHead):
-    def __init__(self, cfg, input_shape, num_classes=1):
+    def __init__(self, cfg, in_channels, num_classes=1):
         self.flag = True
         self.num_classes = num_classes
-        super().__init__(cfg, input_shape)
+        super().__init__(cfg, in_channels)
 
     def forward(self, features, skls=None, gt_masks=None):
         """
@@ -332,8 +280,8 @@ class BodyMaskHead(ImplicitPointRendMaskHead):
         return point_coords, point_labels
     
 class JointMaskHead(ImplicitPointRendMaskHead):
-    def __init__(self, cfg, input_shape, num_classes=1):
-        super().__init__(cfg, input_shape, num_classes)
+    def __init__(self, cfg, in_channels, num_classes=1):
+        super().__init__(cfg, in_channels, num_classes)
 
     def forward(self, features, skls=None, gt_masks=None):
         """
@@ -402,8 +350,8 @@ class JointMaskHead(ImplicitPointRendMaskHead):
         return point_coords, point_labels
     
 class FlowMaskHead(ImplicitPointRendMaskHead):
-    def __init__(self, cfg, input_shape, num_classes=1):
-        super().__init__(cfg, input_shape, num_classes)
+    def __init__(self, cfg, in_channels, num_classes=1):
+        super().__init__(cfg, in_channels, num_classes)
 
     def forward(self, features, flows=None):
         """
@@ -432,6 +380,27 @@ class FlowMaskHead(ImplicitPointRendMaskHead):
 
         h = int(hf // self.scale)
         w = int(wf // self.scale)
+
+        # with torch.no_grad():
+        #     flows0 = flows.detach().clone()
+        #     flows_norm = torch.norm(flows0, dim=1, keepdim=True)
+        #     flows_norm_max = flows_norm.flatten(2).max(dim=2)[0].unsqueeze(1).unsqueeze(1)
+
+        #     flows1 = flows.detach().clone()
+        #     flows_mean = torch.mean(flows1, dim=(2, 3), keepdim=True)
+        #     flows_centered = flows1 - flows_mean
+        #     flows_centered_norm = torch.norm(flows_centered, dim=1, keepdim=True)
+        #     flows_centered_norm_max = flows_centered_norm.flatten(2).max(dim=2)[0].unsqueeze(1).unsqueeze(1)
+            
+        #     pos_masks1 = (flows_norm > flows_norm_max * 0.8).squeeze(1)
+        #     neg_masks1 = (flows_norm < flows_norm_max * 0.2).squeeze(1)
+        #     pos_masks2 = (flows_centered_norm > flows_centered_norm_max * 0.8).squeeze(1)
+        #     neg_masks2 = (flows_centered_norm < flows_centered_norm_max * 0.2).squeeze(1)
+        #     pos_masks = pos_masks2 & ~neg_masks1
+        #     neg_masks = neg_masks2 & ~pos_masks1
+
+        #     for i in range(len(pos_masks)):
+        #         print(torch.sum(pos_masks[i]), torch.sum(neg_masks[i]))
 
         flows_mean = torch.mean(flows, dim=(2, 3), keepdim=True)
         flows_centered = flows - flows_mean
@@ -465,23 +434,18 @@ class FlowMaskHead(ImplicitPointRendMaskHead):
     
 if __name__ == '__main__':
     class cfg:
-        POINT_HEAD_NUM_FC = 3
-        POINT_HEAD_FC_DIM = 128
-        POINT_HEAD_TRAIN_NUM_POINTS = 196
-        POINT_HEAD_SUBDIVISION_STEPS = 3
-        POINT_HEAD_SUBDIVISION_NUM_POINTS = 784
-        IMPLICIT_POINTREND_IMAGE_FEATURE_ENABLED = True
-        IMPLICIT_POINTREND_POS_ENC_ENABLED = True
-        ROI_MASK_HEAD_OUTPUT_SIDE_RESOLUTION = 14
-        ROI_MASK_HEAD_FC_DIM = 512
-        ROI_MASK_HEAD_NUM_FC = 2
-        ROI_MASK_HEAD_CONV_DIM = 128
-        ROI_MASK_HEAD_IN_FEATURES = 256
-        ROI_MASK_HEAD_POOLER_RESOLUTION = 14
+        point_head_num_fc = 3
+        point_head_fc_dim = 128
+        train_num_points = 196
+        subdivision_steps = 3
+        subdivision_num_points = 784
+        image_feature_enabled = True
+        pos_enc_enabled = True
+        scale = 1.0 / 4
 
-    input_shape = [256, 14, 14]
+    in_channels = 256
 
-    head = ImplicitPointRendMaskHead(cfg, input_shape)
+    head = BodyMaskHead(cfg, in_channels)
 
     features = torch.rand(2, 256, 56, 56)
     skls = (torch.rand(2, 17, 2) * 224).type(torch.int)

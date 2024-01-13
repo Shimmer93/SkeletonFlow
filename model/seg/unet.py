@@ -48,7 +48,10 @@ class Encoder(nn.Module):
         self.enc2 = resnet[5]
         self.enc3 = resnet[6]
 
-        self.enc_dims = [256, 512, 1024]
+        if type == 'resnet18':
+            self.enc_dims = [64, 128, 256]
+        else:
+            self.enc_dims = [256, 512, 1024]
 
     def _init_vgg(self, type, pretrained):
         if type == 'vgg16_bn':
