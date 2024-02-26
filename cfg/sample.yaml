@@ -35,11 +35,35 @@ num_joints: 15
 # --------------------------------------
 # Flow Model parameters
 # --------------------------------------
-flow_model_name: raft
-flow_model_path: /home/zpengac/RAFT/models/raft-sintel.pth
+flow_model_name: ff #raft
+flow_model_path: things.pth #/home/zpengac/RAFT/models/raft-sintel.pth
 global_flow: True
-dataset: sintel
+#dataset: sintel
+stage: sintel
 small: False
+transformer: 'latentcostformer'
+fnet: twins
+pretrain: True
+encoder_latent_dim: 256
+cost_latent_input_dim: 64
+cost_heads_num: 1
+patch_size: 8
+pe: 'linear'
+encoder_depth: 3
+cost_latent_token_num: 8
+cost_latent_dim: 128
+dropout: 0.0
+use_mlp: False
+vertical_conv: False
+vert_c_dim: 64
+query_latent_dim: 64
+decoder_depth: 32
+add_flow_token: True
+gma: 'GMA'
+only_global: False
+cnet: 'twins'
+rm_res: True
+train_num_points: 100
 # --------------------------------------
 # Model Head parameters
 # --------------------------------------

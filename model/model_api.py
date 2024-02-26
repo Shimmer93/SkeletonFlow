@@ -23,6 +23,9 @@ from loss.loss import JointSegTrainLoss, JointConsistLoss, BodySegValLoss, Joint
 from misc.vis import denormalize, flow_to_image, mask_to_image, mask_to_joint_images
 from misc.utils import write_psm
 
+# from core.FlowFormer import FlowFormer
+from model.flow.FlowFormer import build_flowformer
+
 def normalize_imagenet(img):
     return TF.normalize(img, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 
@@ -39,8 +42,8 @@ def create_model_seg(hparams):
 def create_model_flow(hparams):
     if hparams.flow_model_name == 'raft':
         model = RAFT(hparams)
-    # elif hparams.flow_model_name == 'gaflow':
-    #     model = GAFlow(hparams)
+    elif hparams.flow_model_name == 'ff':
+        model = build_flowformer(hparams)
     else:
         raise NotImplementedError
     
@@ -51,7 +54,7 @@ def create_model_flow(hparams):
             new_sd[k[7:]] = v
         else:
             new_sd[k] = v
-    model.load_state_dict(new_sd)
+    model.load_state_dict(new_sd,strict=False)
 
     return model
 
